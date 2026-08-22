@@ -115,12 +115,11 @@ uninstalling that app or deleting its private data.
    adb install app/build/outputs/apk/dev/debug/app-dev-debug.apk
    ```
 
-   Published sideload builds are signed with a stable key instead, so an update installs over
-   the previous one rather than being refused. That needs a `keystore.properties` next to `app/`
-   (gitignored — it points at the keystore and holds its passwords); without it, builds fall back
-   to debug signing. The APKs attached to a GitHub release are built by the `release-apk`
-   workflow from a clean checkout of the tag when the release is published, signed with the same
-   stable key from repository secrets — no locally built artifact is uploaded by hand.
+   Development builds use the committed shared development key, so an APK built on one workstation
+   updates an install from another without losing downloaded models. The APKs attached to a GitHub
+   release are built by the `release-apk` workflow from a clean checkout of the tag when the release
+   is published, using a separate release key from repository secrets — no locally built artifact is
+   uploaded by hand.
 
 ## Flavors
 

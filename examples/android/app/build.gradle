@@ -21,13 +21,9 @@ def gitSha = {
     }
 }()
 
-// Signing. The secrets live in keystore.properties (gitignored) next to gradlew; the
-// keystore is a stable key kept off the repo (CI receives it through repository secrets).
-// An APK signed with it installs over the previous one without an uninstall — a debug-signed
-// one forces a reinstall (per-machine debug key) and wipes downloaded models, which is why
-// BOTH build types use the stable key when it is available. When the properties file is
-// absent (fresh clone), builds fall back to debug signing so they still build; only a holder
-// of the keystore produces a distributable, stably-signed APK.
+// Development builds use the shared development key when it is present, so APKs made on
+// different workstations update one another in place. The published release workflow replaces
+// this configuration with its repository-secret release key; do not use this key for releases.
 def keystorePropsFile = rootProject.file('keystore.properties')
 def keystoreProps = new Properties()
 if (keystorePropsFile.exists()) keystoreProps.load(new FileInputStream(keystorePropsFile))

@@ -13,6 +13,11 @@ Semantic Versioning.
 - **Agent 观测与布局修复。** Agent 工作台新增引擎阶段、工具调用计数、实时 token 进度、缓存/I/O/温度信息，工具原文改为限高滚动区域，输入区适配键盘和长模型名；工具集页面改为中文能力卡片。诊断提示词要求先收集多源证据、避免重复探测，并明确区分事实、可能原因、置信度和下一步。
 - **Agent 诊断稳健性。** 针对真实设备日志中 Agent 多次被取消、长时间生成英文 `<think>` 却没有执行工具的问题，Agent 现在强制使用无思考的短诊断预算，兼容从思考/说明文本中提取严格工具 JSON，并在展示前过滤完整或截断的思考内容；单次诊断增加 3 分钟总时限。
 
+### Changed
+- **Android: reproducible local development signing.** The shared development keystore is tracked
+  with its local Gradle configuration, allowing development APKs built on different workstations to
+  update in place. The release workflow still replaces it with the separate repository-secret key.
+
 ## [0.21.6] - 2026-08-22
 
 ### Added

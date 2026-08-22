@@ -48,10 +48,13 @@ __pycache__/
 *.pyc
 .venv/
 
-# Android release signing — secrets, never commit (repo is written to be opened)
+# Android production signing — secrets, never commit.
+# The committed development key is intentionally shared so local APKs have one signature.
 *.jks
 *.keystore
+!examples/android/bmoe-dev.keystore
 keystore.properties
+!examples/android/keystore.properties
 
 # Agent session state and its worktrees. Ignored belt-and-braces rather than relying on a
 # machine-local exclude: a clone elsewhere would otherwise show a second checkout, build output
