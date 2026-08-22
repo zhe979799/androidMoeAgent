@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -99,6 +100,11 @@ private fun Root() {
     val context = LocalContext.current
     var showSettings by remember { mutableStateOf(false) }
     var showMetrics by remember { mutableStateOf(false) }
+    var showAutotune by remember { mutableStateOf(false) }
+    var showAgent by remember { mutableStateOf(false) }
+    var showCommunity by remember { mutableStateOf(false) }
+    var showToolkits by remember { mutableStateOf(false) }
+    var toolkitIds by remember { mutableStateOf(ToolkitPreferences.load(context)) }
     var settings by remember { mutableStateOf(AppSettings.load(context)) }
 
     // Model-scan state lives here, above the settings/main switch, so opening Settings and
@@ -125,6 +131,32 @@ private fun Root() {
         )
     } else if (showMetrics) {
         MetricsScreen(onBack = { showMetrics = false })
+    } else if (showAutotune) {
+        AutotuneScreen(context, settings, models.getOrNull(modelIdx), onBack = { showAutotune = false })
+    } else if (showAgent) {
+        AgentScreen(
+            context = context,
+            models = models,
+            modelIdx = modelIdx,
+            settings = settings,
+            toolkitIds = toolkitIds,
+            onSelectModel = { modelIdx = it },
+            onBack = { showAgent = false },
+        )
+    } else if (showCommunity) {
+        CommunityScreen(onBack = { showCommunity = false }, onOpenAgent = {
+            showCommunity = false
+            showAgent = true
+        })
+    } else if (showToolkits) {
+        ToolkitScreen(context, onBack = {
+            toolkitIds = ToolkitPreferences.load(context)
+            showToolkits = false
+        }, onOpenAgent = {
+            toolkitIds = ToolkitPreferences.load(context)
+            showToolkits = false
+            showAgent = true
+        })
     } else {
         MainScreen(
             settings = settings,
@@ -135,6 +167,11 @@ private fun Root() {
             onRefresh = { refreshKey++ },
             onOpenSettings = { showSettings = true },
             onOpenMetrics = { showMetrics = true },
+            onOpenAutotune = { showAutotune = true },
+            onOpenAgent = { showAgent = true },
+            onOpenCommunity = { showCommunity = true },
+            onOpenToolkits = { showToolkits = true },
+            toolkitIds = toolkitIds,
         )
     }
 }
@@ -149,18 +186,43 @@ private fun MainScreen(
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMetrics: () -> Unit,
+    onOpenAutotune: () -> Unit,
+    onOpenAgent: () -> Unit,
+    onOpenCommunity: () -> Unit,
+    onOpenToolkits: () -> Unit,
+    toolkitIds: Set<String>,
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val ui by RunBus.state.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val networkAgent = remember(scope) { NetworkAgentCoordinator(scope) }
+    val selectedModel = models.getOrNull(modelIdx)
+    val pendingReload = selectedModel != null && ui.sessionSig != null &&
+        settings.sessionSignature(selectedModel.absolutePath) != ui.sessionSig
+    // Leaving this screen must cancel both the coordinator and an in-flight native generation;
+    // otherwise a hidden agent turn could keep consuming the foreground model session.
+    DisposableEffect(networkAgent, context) {
+        onDispose {
+            networkAgent.cancel()
+            context.startService(Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL))
+        }
+    }
 
     var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
+    // This deliberately changes only the foreground interaction. It does not start a gateway,
+    // background task, shell, Accessibility service, or a second inference runtime.
+    var networkAnalysis by rememberSaveable { mutableStateOf(false) }
+    // This text is never read from the filesystem. It is an explicit per-run user selection that
+    // the model can inspect only through read_selected_log, and only when it asks for that tool.
+    var selectedLog by rememberSaveable { mutableStateOf("") }
+    val allowedAgentTools = ToolkitCatalog.toolsFor(toolkitIds, selectedLog.isNotBlank())
     val listState = rememberLazyListState()
 
     // Item 0 is the controls block; the transcript and the in-flight answer follow it. The live
     // turn also shows while only reasoning has streamed (the thinking phase, before any answer),
     // so a Thinking-on run does not sit on a blank screen while the model reasons.
-    val liveShown = ui.answer.isNotEmpty() || ui.reasoning.isNotEmpty()
+    val liveShown = !ui.agentActive && (ui.answer.isNotEmpty() || ui.reasoning.isNotEmpty())
     val total = 1 + ui.transcript.size + (if (liveShown) 1 else 0)
 
     // Follow the tail only while the user is parked at the bottom. A long answer streams for a
@@ -201,8 +263,17 @@ private fun MainScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        TextButton(onClick = onOpenMetrics) { Text("Metrics") }
-                        TextButton(onClick = onOpenSettings) { Text("Settings") }
+                        TextButton(onClick = onOpenSettings) { Text("设置") }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        TextButton(onClick = onOpenAgent, enabled = models.isNotEmpty() && !ui.busy) { Text("Agent") }
+                        TextButton(onClick = onOpenCommunity) { Text("社区") }
+                        TextButton(onClick = onOpenToolkits) { Text("工具集") }
+                        TextButton(onClick = onOpenMetrics) { Text("指标") }
+                        TextButton(onClick = onOpenAutotune, enabled = models.isNotEmpty() && !ui.busy) { Text("调优") }
                     }
 
                     when {
@@ -226,6 +297,7 @@ private fun MainScreen(
                             options = models.map { it.name },
                             selected = modelIdx,
                             onSelect = onSelectModel,
+                            enabled = !ui.busy && !ui.agentActive,
                         )
                     }
 
@@ -239,13 +311,49 @@ private fun MainScreen(
                         onModelReady = onRefresh,
                     )
 
+                    if (pendingReload) {
+                        Text(
+                            "设置已变更，下一次发送会重新加载模型并应用新配置。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
+
+                    SwitchRow(
+                        label = "网络分析",
+                        description = "仅在当前页面调用有限的只读诊断工具。",
+                        checked = networkAnalysis,
+                        enabled = !ui.busy && !ui.agentActive,
+                        onChange = { networkAnalysis = it },
+                    )
+
+                    if (networkAnalysis) {
+                        Text(
+                            if (allowedAgentTools.isEmpty()) "当前没有授权的观测工具，诊断只会基于模型知识。"
+                            else "本次授权 ${allowedAgentTools.size} 个只读工具；网络探测只在你点击 Diagnose 后执行。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
+
                     OutlinedTextField(
                         value = prompt,
                         onValueChange = { prompt = it },
-                        label = { Text("Prompt") },
+                        label = { Text(if (networkAnalysis) "Network problem" else "Prompt") },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2,
                     )
+                    if (networkAnalysis) {
+                        OutlinedTextField(
+                            value = selectedLog,
+                            onValueChange = { selectedLog = it.take(32 * 1024) },
+                            label = { Text("Optional selected log text") },
+                            supportingText = { Text("Only pasted text is available to the read-only log tool.") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 2,
+                            maxLines = 6,
+                        )
+                    }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
@@ -254,23 +362,41 @@ private fun MainScreen(
                                 // space it was covering, and there is otherwise no in-app way to dismiss it.
                                 focusManager.clearFocus()
                                 if (models.isNotEmpty()) {
-                                    // First message of a conversation clears the KV; a follow-up continues it.
-                                    launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
-                                        prompt.ifBlank { "The capital of Japan is" }, settings, ui.sessionSig,
-                                        clearKv = ui.transcript.isEmpty())
+                                    val selected = models[modelIdx.coerceIn(0, models.size - 1)]
+                                    val request = prompt.ifBlank {
+                                        if (networkAnalysis) "Why can this phone connect to Wi-Fi but not open a website?"
+                                        else "The capital of Japan is"
+                                    }
+                                    if (networkAnalysis) {
+                                        networkAgent.start(
+                                            context,
+                                            selected,
+                                            settings,
+                                            request,
+                                            selectedLog,
+                                            allowedAgentTools,
+                                        )
+                                    } else {
+                                        // First message of a conversation clears the KV; a follow-up continues it.
+                                        launchPrompt(context, selected, request, settings, ui.sessionSig,
+                                            clearKv = ui.transcript.isEmpty() || ui.clearKvOnNextPrompt)
+                                    }
                                 }
                             },
-                            enabled = !ui.busy && models.isNotEmpty(),
+                            enabled = !ui.busy && !ui.agentActive && models.isNotEmpty(),
                             modifier = Modifier.weight(1f),
-                        ) { Text(if (ui.transcript.isNotEmpty()) "Send" else if (ui.ready) "Send" else "Run") }
+                        ) {
+                            Text(if (networkAnalysis) "Diagnose" else if (ui.transcript.isNotEmpty()) "Send" else if (ui.ready) "Send" else "Run")
+                        }
 
                         OutlinedButton(
                             onClick = {
+                                networkAgent.cancel()
                                 context.startService(
                                     Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL)
                                 )
                             },
-                            enabled = ui.generating,
+                            enabled = ui.generating || ui.loading || ui.agentActive,
                             modifier = Modifier.weight(1f),
                         ) { Text("Stop") }
                     }
@@ -279,17 +405,21 @@ private fun MainScreen(
                         // Start a new conversation: the next Send clears the KV. Keeps the model loaded.
                         TextButton(
                             onClick = { RunBus.update { it.copy(transcript = emptyList(), answer = "", summary = "", error = null) } },
-                            enabled = ui.transcript.isNotEmpty() && !ui.busy,
+                            enabled = ui.transcript.isNotEmpty() && !ui.busy && !ui.agentActive,
                         ) { Text("New chat") }
 
                         // The session keeps the model resident (and the cache warm) between prompts. Free it
                         // explicitly, or let the service auto-unload after an idle timeout.
                         if (ui.ready || ui.loading) {
-                            TextButton(onClick = {
-                                context.startService(
-                                    Intent(context, RunService::class.java).setAction(RunService.ACTION_SHUTDOWN)
-                                )
-                            }) { Text("Unload model") }
+                            TextButton(
+                                onClick = {
+                                    networkAgent.cancel()
+                                    context.startService(
+                                        Intent(context, RunService::class.java).setAction(RunService.ACTION_SHUTDOWN)
+                                    )
+                                },
+                                enabled = !ui.agentActive,
+                            ) { Text("Unload model") }
                         }
                     }
 
@@ -335,6 +465,13 @@ private fun MainScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    if (networkAnalysis && (ui.agentActive || ui.agentTools.isNotEmpty() || ui.agentStatus != null)) {
+                        AgentToolsCard(ui.agentStatus, ui.agentTools, ui, toolkitIds)
+                        ui.agentTranscript.lastOrNull { it.role == "assistant" }?.let { answer ->
+                            MarkdownText(answer.text)
                         }
                     }
 
@@ -384,6 +521,118 @@ private fun MainScreen(
             ) { Text("Jump to latest") }
         }
     }
+}
+
+/** Visible audit trail for the bounded, foreground-only network diagnostics loop. */
+@Composable
+fun AgentToolsCard(
+    status: String?,
+    tools: List<AgentToolRecord>,
+    ui: UiState? = null,
+    toolkitIds: Set<String> = emptySet(),
+) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Agent 观测", fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            (ui?.agentRunId ?: 0L) > 0L -> "本次授权 ${ui?.agentAllowedTools?.size ?: 0} 个工具 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
+                            toolkitIds.isNotEmpty() -> "已启用 ${toolkitIds.size} 个工具集 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
+                            else -> "未启用设备工具 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
+                        },
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                ui?.let {
+                    Text(
+                        when {
+                            it.agentActive -> "运行中"
+                            it.agentError != null -> "异常"
+                            tools.isNotEmpty() -> "已完成"
+                            else -> "待命"
+                        },
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = when {
+                            it.agentError != null -> MaterialTheme.colorScheme.error
+                            it.agentActive -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+            status?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            ui?.let { state ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "引擎：${when (state.state) {
+                            EngineState.LOADING -> "加载中"
+                            EngineState.GENERATING -> if (state.telemetry.step == 0) "预填充" else "生成中"
+                            EngineState.READY -> "就绪"
+                            EngineState.ERROR -> "错误"
+                            EngineState.IDLE -> "空闲"
+                        }}",
+                        fontSize = 12.sp,
+                    )
+                    if (state.generating && state.telemetry.step > 0) {
+                        Text("${state.telemetry.step} token · ${String.format(Locale.US, "%.1f", state.telemetry.tokensPerSecond)} tok/s", fontSize = 12.sp)
+                    }
+                }
+                val environment = buildList {
+                    state.ioMode?.let { add("I/O $it") }
+                    state.cpuTempC?.let { add(String.format(Locale.US, "温度 %.1f°C", it)) }
+                    state.telemetry.cacheHitPct.takeIf { it >= 0 }?.let { add(String.format(Locale.US, "缓存 %.0f%%", it)) }
+                }
+                if (environment.isNotEmpty()) {
+                    Text(environment.joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            tools.forEachIndexed { index, tool ->
+                var expanded by rememberSaveable(index, tool.name, tool.arguments) { mutableStateOf(false) }
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small) {
+                    Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                ToolkitCatalog.toolTitle(tool.name),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(statusLabel(tool.status), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (tool.summary.isNotEmpty()) {
+                            Text(tool.summary, fontSize = 12.sp)
+                        } else {
+                            Text("参数：${tool.arguments}", fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (tool.result.isNotEmpty()) {
+                            TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
+                                Text(if (expanded) "收起原始结果" else "查看原始结果", fontSize = 12.sp)
+                            }
+                            if (expanded) SelectionContainer {
+                                Text(
+                                    tool.result,
+                                    Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState()),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun statusLabel(status: String): String = when (status) {
+    "running" -> "运行中"
+    "done" -> "完成"
+    else -> status
 }
 
 /**
@@ -642,13 +891,18 @@ private fun MeterRow(label: String, value: Double, total: Double, color: android
  * otherwise the session is (re)started with this configuration and the prompt runs as soon as it
  * reports ready. Per-prompt options (n_predict, thinking) ride the request, not the session.
  */
-private fun launchPrompt(
+internal fun launchPrompt(
     context: android.content.Context,
     model: File,
     prompt: String,
     settings: AppSettings,
     currentSig: String?,
     clearKv: Boolean,
+    displayPrompt: String? = null,
+    suppressTranscript: Boolean = false,
+    csvPath: String? = null,
+    thinkOverride: Boolean? = null,
+    nPredictOverride: Int? = null,
 ) {
     RunBus.resetGeneration()
     val sig = settings.sessionSignature(model.absolutePath)
@@ -657,16 +911,18 @@ private fun launchPrompt(
             Intent(context, RunService::class.java)
                 .setAction(RunService.ACTION_GENERATE)
                 .putExtra(RunService.EXTRA_PROMPT, prompt)
-                .putExtra(RunService.EXTRA_NPREDICT, settings.nPredict)
-                .putExtra(RunService.EXTRA_THINK, settings.thinking)
+                .putExtra(RunService.EXTRA_NPREDICT, nPredictOverride ?: settings.nPredict)
+                .putExtra(RunService.EXTRA_THINK, thinkOverride ?: settings.thinking)
                 .putExtra(RunService.EXTRA_CLEAR_KV, clearKv)
+                .putExtra(RunService.EXTRA_DISPLAY_PROMPT, displayPrompt)
+                .putExtra(RunService.EXTRA_SUPPRESS_TRANSCRIPT, suppressTranscript)
         )
     } else {
         // A new session starts with an empty KV and a cleared transcript, so its first turn
         // always clears regardless of [clearKv].
         // One CSV per session: the engine holds it open across every turn, so it is opened here,
         // where a session is opened, and nowhere else.
-        val csv = if (settings.metricsCsv) AppSettings.newMetricsCsvPath(context) else null
+        val csv = csvPath ?: if (settings.metricsCsv) AppSettings.newMetricsCsvPath(context) else null
         val argv = ArrayList(settings.sessionArgv(ModelManager.cliPath(context), model.absolutePath, csv))
         ContextCompat.startForegroundService(
             context,
@@ -675,9 +931,11 @@ private fun launchPrompt(
                 .putStringArrayListExtra(RunService.EXTRA_ARGV, argv)
                 .putExtra(RunService.EXTRA_SIG, sig)
                 .putExtra(RunService.EXTRA_PROMPT, prompt)
-                .putExtra(RunService.EXTRA_NPREDICT, settings.nPredict)
-                .putExtra(RunService.EXTRA_THINK, settings.thinking)
+                .putExtra(RunService.EXTRA_NPREDICT, nPredictOverride ?: settings.nPredict)
+                .putExtra(RunService.EXTRA_THINK, thinkOverride ?: settings.thinking)
                 .putExtra(RunService.EXTRA_CLEAR_KV, true)
+                .putExtra(RunService.EXTRA_DISPLAY_PROMPT, displayPrompt)
+                .putExtra(RunService.EXTRA_SUPPRESS_TRANSCRIPT, suppressTranscript)
         )
     }
 }

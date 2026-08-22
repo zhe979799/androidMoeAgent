@@ -38,6 +38,7 @@ object ModelDownloader {
         val downloadedBytes: Long,
         val totalBytes: Long, // -1 when the server didn't send a length
         val state: State,
+        val source: String? = null,
         val reason: String? = null,
     )
 
@@ -66,40 +67,50 @@ object ModelDownloader {
         rawUrl: String,
         fileName: String? = null,
         expectedBytes: Long = -1L,
-    ): Result<String> = runCatching {
-        val url = rawUrl.trim()
-        val uri = Uri.parse(url)
-        require(uri.scheme == "http" || uri.scheme == "https") { "URL must be http(s)" }
-
+    ): Result<String> {
+        val uri = Uri.parse(rawUrl.trim())
+        require(uri.scheme == "https") { "URL must use https" }
         val name = fileName ?: DownloadWorker.fileNameFromUrl(uri)
-        require(name.endsWith(".gguf")) { "URL must point to a .gguf file" }
+        return enqueueCandidates(ctx, listOf(ModelCatalog.SourceCandidate("Direct", rawUrl.trim())), name, expectedBytes,
+            ModelCatalog.SourceMode.OFFICIAL)
+    }
 
+    fun enqueueCandidates(
+        ctx: Context,
+        candidates: List<ModelCatalog.SourceCandidate>,
+        fileName: String,
+        expectedBytes: Long,
+        mode: ModelCatalog.SourceMode,
+    ): Result<String> = runCatching {
+        require(candidates.isNotEmpty()) { "no download sources" }
+        val name = fileName.trim()
+        require(name.endsWith(".gguf") && name == DownloadWorker.safeFileName(name)) { "invalid .gguf filename" }
+        val selected = when (mode) {
+            ModelCatalog.SourceMode.AUTO -> candidates
+            ModelCatalog.SourceMode.OFFICIAL -> candidates.filter { it.label == "Official" || it.label == "Direct" }.take(1)
+            ModelCatalog.SourceMode.MAINLAND_MIRROR -> candidates.filter { it.label == "Mainland mirror" }.take(1)
+        }.also { require(it.isNotEmpty()) { "selected source is unavailable" } }
         val dir = ModelManager.internalModelsDir(ctx)
-        if (expectedBytes > 0 && expectedBytes > dir.usableSpace) {
-            error(
-                "needs ${ModelCatalog.gbLabel(expectedBytes)}, " +
-                    "only ${ModelCatalog.gbLabel(dir.usableSpace)} free"
-            )
+        val partial = File(dir, name + DownloadWorker.PART_SUFFIX).length()
+        if (expectedBytes > 0 && expectedBytes - partial > dir.usableSpace) {
+            error("needs ${ModelCatalog.gbLabel(expectedBytes)}, only ${ModelCatalog.gbLabel(dir.usableSpace)} free")
         }
-
-        val req = OneTimeWorkRequestBuilder<DownloadWorker>()
-            .setInputData(
-                workDataOf(
-                    DownloadWorker.KEY_URL to url,
-                    DownloadWorker.KEY_NAME to name,
-                    DownloadWorker.KEY_EXPECTED to expectedBytes,
-                )
-            )
-            .addTag(DownloadWorker.TAG)
-            .addTag(NAME_TAG_PREFIX + name)
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-            .build()
-        // Block until the work is persisted (a fast local DB write) so the next events() emission
-        // already carries it — otherwise the row wouldn't show as downloading.
-        WorkManager.getInstance(ctx).enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, req).result.get()
+        enqueueWork(ctx, name, selected, expectedBytes)
         name
     }
+
+    private fun enqueueWork(ctx: Context, name: String, sources: List<ModelCatalog.SourceCandidate>, expected: Long) {
+        val req = OneTimeWorkRequestBuilder<DownloadWorker>().setInputData(workDataOf(
+            DownloadWorker.KEY_URLS to sources.map { it.url }.toTypedArray(),
+            DownloadWorker.KEY_LABELS to sources.map { it.label }.toTypedArray(),
+            DownloadWorker.KEY_NAME to name,
+            DownloadWorker.KEY_EXPECTED to expected,
+        )).addTag(DownloadWorker.TAG).addTag(NAME_TAG_PREFIX + name)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build()
+        WorkManager.getInstance(ctx).enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, req).result.get()
+    }
+
 
     /**
      * Start a sharded (multi-file) catalog download: one [DownloadWorker] per missing shard,
@@ -112,7 +123,7 @@ object ModelDownloader {
      * partial bytes), not per file — three separate late failures for one decision is the thing
      * this avoids. Shards already fully on disk are skipped, so a torn set resumes cleanly.
      */
-    fun enqueueShards(ctx: Context, entry: ModelCatalog.Entry): Result<String> = runCatching {
+    fun enqueueShards(ctx: Context, entry: ModelCatalog.Entry, mode: ModelCatalog.SourceMode = ModelCatalog.SourceMode.AUTO): Result<String> = runCatching {
         require(entry.shards.isNotEmpty()) { "not a sharded entry" }
         val dir = ModelManager.internalModelsDir(ctx)
         val missing = entry.shards.filter { !File(dir, it.fileName).isFile }
@@ -131,7 +142,8 @@ object ModelDownloader {
             OneTimeWorkRequestBuilder<DownloadWorker>()
                 .setInputData(
                     workDataOf(
-                        DownloadWorker.KEY_URL to s.url,
+                        DownloadWorker.KEY_URLS to selectedSources(s.sources, mode).map { it.url }.toTypedArray(),
+                        DownloadWorker.KEY_LABELS to selectedSources(s.sources, mode).map { it.label }.toTypedArray(),
                         DownloadWorker.KEY_NAME to s.fileName,
                         DownloadWorker.KEY_EXPECTED to s.bytes,
                     )
@@ -149,9 +161,14 @@ object ModelDownloader {
         entry.fileName
     }
 
+    private fun selectedSources(sources: List<ModelCatalog.SourceCandidate>, mode: ModelCatalog.SourceMode) = when (mode) {
+        ModelCatalog.SourceMode.AUTO -> sources
+        ModelCatalog.SourceMode.OFFICIAL -> sources.filter { it.label == "Official" }.take(1)
+        ModelCatalog.SourceMode.MAINLAND_MIRROR -> sources.filter { it.label == "Mainland mirror" }.take(1)
+    }.also { require(it.isNotEmpty()) { "selected source is unavailable" } }
+
     /**
      * A catalog entry's aggregate progress, or null when nothing of it is in flight. Single-file
-     * entries pass through; for a sharded entry the fraction is over the WHOLE set — shards already
      * on disk count as done, the in-flight shard contributes its partial bytes — because the row
      * shows one model, not three files.
      */
@@ -171,6 +188,7 @@ object ModelDownloader {
             downloadedBytes = landed + inFlight,
             totalBytes = e.approxBytes,
             state = active.second.state,
+            source = active.second.source,
             reason = active.second.reason,
         )
     }
@@ -219,6 +237,7 @@ object ModelDownloader {
                         info.progress.getLong(DownloadWorker.KEY_DONE, 0),
                         info.progress.getLong(DownloadWorker.KEY_TOTAL, -1),
                         State.RUNNING,
+                        info.progress.getString(DownloadWorker.KEY_SOURCE),
                     )
                     WorkInfo.State.SUCCEEDED -> if (settled.add(info.id)) {
                         withContext(Dispatchers.IO) { finalizeDownload(ctx, name) }

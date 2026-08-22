@@ -6,10 +6,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Fetching a model is the only thing this app does over the network: the in-app download
-         worker needs INTERNET. Inference is entirely on-device — nothing about a prompt or an
-         answer leaves the phone. -->
+    <!-- The downloader needs INTERNET. Inference is entirely on-device — nothing about a prompt
+         or answer leaves the phone. The optional foreground Network analysis mode also makes only
+         the user-visible, bounded diagnostic requests described in examples/android/README.md. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Foreground Network analysis reads the active link and DNS metadata through
+         ConnectivityManager. It cannot change a network or obtain Wi-Fi credentials. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- No broad storage permission here: models arrive through the in-app URL downloader or
          the system file picker, both writing to the app-internal models dir (filesDir, a real
          filesystem where O_DIRECT works). The dev flavor overlay (src/dev/AndroidManifest.xml)
@@ -56,7 +59,7 @@
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
-        <!-- Hands a metrics CSV to another app (Drive, Gmail, Files) as a content:// URI with a
+        <!-- Hands a metrics CSV or agent log to another app (Drive, Mail, Files) as a content:// URI with a
              one-shot read grant. A file:// URI would be refused outright since Android 7, and the
              alternative — telling the user to go find the file — is not a feature. Scoped to the
              app's own external files dir; it exposes nothing else. -->

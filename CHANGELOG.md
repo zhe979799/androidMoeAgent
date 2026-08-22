@@ -4,6 +4,92 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.21.7] - 2026-08-22
+
+### Added
+- **Expanded local Agent tools.** Added read-only network capabilities and interface addresses, application/device/memory/display/thermal observations, process-memory metrics, and retained Agent-log metadata. All new tools use empty arguments, remain scoped to this app or the active public network, and are filtered through the same toolkit registry and executor validation.
+- **Extensible Agent toolkits.** The Agent registry includes optional performance observation and model-catalog groups in addition to network, device and log toolkits. The Agent can request current session telemetry or the local MoE model list only when those groups are enabled; registry and protocol tests cover the selection contract. App version 0.21.7 (versionCode 43).
+- **Agent session boundary and explicit launch.** Agent control turns now use a separate visible transcript, opening the workspace no longer starts inference or network observations automatically, ordinary chat no longer shows stale Agent errors/results, and the home network-analysis entry uses the persisted toolkit authorization. Loading can be cancelled from the primary action area.
+- **Agent 观测与布局修复。** Agent 工作台新增引擎阶段、工具调用计数、实时 token 进度、缓存/I/O/温度信息，工具原文改为限高滚动区域，输入区适配键盘和长模型名；工具集页面改为中文能力卡片。诊断提示词要求先收集多源证据、避免重复探测，并明确区分事实、可能原因、置信度和下一步。
+- **Agent 诊断稳健性。** 针对真实设备日志中 Agent 多次被取消、长时间生成英文 `<think>` 却没有执行工具的问题，Agent 现在强制使用无思考的短诊断预算，兼容从思考/说明文本中提取严格工具 JSON，并在展示前过滤完整或截断的思考内容；单次诊断增加 3 分钟总时限。
+
+## [0.21.6] - 2026-08-22
+
+### Added
+- **Composable Agent toolkits.** Android adds a toolkit catalog with Network diagnostics, Device exploration and Log analysis groups. Users can enable or disable groups before entering the Agent workspace; the model receives only the selected tool descriptions, calls outside the selected registry are rejected, and the choice persists locally. Added catalog/protocol tests and bumped the app to version 0.21.6 (versionCode 42).
+
+## [0.21.5] - 2026-08-22
+
+### Fixed
+- **Hugging Face/Xet catalog downloads start correctly.** Signed CDN redirects may end in a content
+  hash rather than the GGUF filename, so the downloader now validates the filename on the initial
+  catalog URL and, when supplied, on the final response's `Content-Disposition`. Every hop still
+  requires HTTPS on port 443 and a public resolved address; exact-size and Range-resume checks are
+  unchanged. App version 0.21.5 (versionCode 41).
+
+## [0.21.5] - 2026-08-22
+
+### Added
+- **Agent 工作台与模型社区入口。** Android app adds a dedicated Chinese Agent page: choosing a loaded MoE model opens a local agent turn automatically, with compact tool summaries and expandable raw JSON. The read-only device-storage diagnostic helps the agent explore app-visible storage without a shell or root. A separate ModelScope discovery page fetches public model metadata/ranking-style results, keeps source metadata separate from downloads, and never installs a model without an explicit user action. Added JVM parser tests and raised the bounded diagnostic loop to five tool calls.
+
+## [0.21.4] - 2026-08-21
+
+### Added
+- **Foreground Android performance comparison.** The Android app exposes a bounded, balanced two-pass tuner for
+  the current cache and I/O settings. It starts a fresh greedy session for every trial, writes one
+  engine CSV per trial plus an autotune CSV containing the schedule, thermal readings, output-match
+  result and exact resolved argv, and recommends an output-matching winner without changing saved
+  settings. Lossy routing, dropping, prefetch and speculation knobs are excluded. The sideloadable
+  build now uses the separate `io.bigmoeonedge.example.devagent` package ID, preserving an older
+  installation and its private data. App version 0.21.4 (versionCode 40).
+
+## [0.21.3] - 2026-08-21
+
+### Added
+- **Resilient Android model sources.** Catalog downloads expose Auto, Official and Mainland mirror
+  modes. Auto probes ordered HTTPS candidates and fails over on connection or HTTP failure; forced
+  modes select one labeled source. Redirects must remain HTTPS, resolve only to public addresses,
+  and retain the expected shard filename. Existing `.part` Range resumes and exact shard-size checks
+  remain in force, with the active or fallback source shown in download progress. App version 0.21.3
+  (versionCode 39).
+
+## [0.21.2] - 2026-08-21
+
+### Added
+- **One-tap diagnostic bundle export.** The Metrics screen can package retained Agent JSONL logs,
+  performance CSVs and a privacy-safe build manifest into a bounded ZIP, then open the Android share
+  panel for Mail, Files or Drive. The archive excludes pasted log source text and model files;
+  CSV model paths are reduced to basenames and local filesystem paths in Agent JSONL are omitted,
+  while Agent requests and network metadata may be present. Audits omit the final answer if pasted
+  log text was supplied, preventing partial log echoes. It uses only the existing FileProvider and
+  app-private external files storage.
+  Archives are capped and retained briefly for retry. App version 0.21.2 (versionCode 38).
+
+## [0.21.1] - 2026-08-21
+
+### Added
+- **Root-free Android agent-log export.** Every foreground Network analysis run now writes a bounded
+  JSONL audit with build/model identity, the user request, tool arguments/results and timings,
+  completion status and final answer. The app retains the newest 20 logs, never copies pasted log
+  text into the audit, and exposes Share/Delete-all actions on the Metrics screen through the
+  existing narrowly scoped FileProvider, so Mail, Files or Drive can receive the logs without root,
+  adb or broad storage permission. App version 0.21.1 (versionCode 37).
+
+## [0.21.0] - 2026-08-19
+
+### Added
+- **Foreground Network analysis mode in the Android demo.** The already-loaded `bmoe-cli --session`
+  remains the sole model owner while an app-layer, at-most-three-call loop lets a model ask for a
+  small audited set of read-only diagnostics: current link/DNS state, public A/AAAA lookup, bounded
+  public-address ping, bounded HTTPS probe, and text explicitly pasted by the user for one diagnosis.
+  Tool calls and raw results appear in the chat UI;
+  control JSON never enters the visible transcript. This is intentionally not a general shell,
+  Python, MCP, Accessibility, Root, Shizuku, SSH, gateway, or background-agent feature. Arguments
+  are validated, private/local/reserved destinations and redirects are rejected, requests have fixed
+  DNS, header, time and output limits, and tool results are explicitly treated as untrusted data when
+  returned to the model. App version
+  0.21.0 (versionCode 36).
+
 ## [0.20.0] - 2026-08-17
 
 ### Added

@@ -10,7 +10,31 @@ So the streaming path has already recovered most of what streaming can recover, 
 below are ordered by that fact: read bandwidth still matters for the models that do not fit a
 useful cache, but throughput on the ones that do now depends on compute.
 
-## Read bandwidth — measured, and mostly not the lever it looked like
+## On-device Agent exploration — local tools and community discovery
+
+The Android app now has a dedicated Chinese Agent workspace and a persistent toolkit catalog.
+Network diagnostics, device exploration, log analysis, performance observation and model-catalog
+groups can be enabled independently; entering the workspace no longer starts a run implicitly.
+The user confirms each task, and the Agent keeps its transcript and observation trail separate from
+ordinary chat. Selecting a loaded model starts the confirmed local turn, and the Agent may request
+only the bounded read-only observations exposed by those selected groups. Results are optimized for
+both sides of the interface: the model gets structured JSON while the human sees a compact summary
+and can expand raw data.
+The community page fetches ModelScope's public model trend endpoint, displays source-provided rank,
+download, like and update metadata, and leaves installation explicit. No root, daemon, shell or
+second model runtime is needed on the test device.
+
+## On-device tuning — measurement infrastructure
+
+The Android app now provides a bounded, recommendation-only comparison for the remaining
+configuration uncertainty. It tests the current settings plus one cache rung and two I/O-lane rungs,
+twice each in balanced order, with fresh sessions and a short thermal cooldown. The candidate set
+changes no inference-quality or lossy knob, and every trial's engine CSV carries the resolved
+configuration. The app compares greedy text, records temperature availability and writes an
+`autotune-*.csv` audit; it does not claim a speedup or silently apply a result. This is the next
+useful step because the existing evidence shows cache and lane choices are device/model dependent,
+while prior experiments already ruled out broad engine changes without matched on-device data.
+
 
 This section used to open by asserting that effective O_DIRECT bandwidth sits well below the
 drive's ceiling *because the routed slices are scattered*. That premise was measured on

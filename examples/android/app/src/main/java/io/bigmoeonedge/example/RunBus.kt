@@ -40,7 +40,23 @@ data class UiState(
     // same percentage means something very different on a narrow routing.
     val nExpertUsed: Int? = null,
     val transcript: List<ChatTurn> = emptyList(), // committed turns; the in-flight answer is `answer`
+    val agentTranscript: List<ChatTurn> = emptyList(), // Agent-only visible turns; never mixed with ordinary chat
     val streaming: Boolean = true,  // is the loaded session using the MoE streamer (vs mmap baseline)?
+    // Incremented only after BMOE_DONE was processed. The foreground network-agent coordinator
+    // waits on this rather than guessing from READY, which can also mean a model just finished loading.
+    val generationId: Long = 0,
+    val lastCompletedText: String = "",
+    // Agent control prompts are deliberately hidden from the ordinary transcript. They also must
+    // not become an invisible continuation context for the next ordinary chat turn.
+    val clearKvOnNextPrompt: Boolean = false,
+    // Network-analysis is a foreground-only, bounded loop. Tool data stays separate from chat text
+    // so a model-produced control JSON is never rendered as an assistant answer.
+    val agentActive: Boolean = false,
+    val agentStatus: String? = null,
+    val agentError: String? = null,
+    val agentTools: List<AgentToolRecord> = emptyList(),
+    val agentAllowedTools: Set<String> = emptySet(),
+    val agentRunId: Long = 0,
 ) {
     val loading get() = state == EngineState.LOADING
     val generating get() = state == EngineState.GENERATING
@@ -59,7 +75,8 @@ object RunBus {
 
     /** Reset the per-generation fields for a new prompt, preserving session state and signature. */
     fun resetGeneration() = _state.update {
-        it.copy(telemetry = Telemetry(), answer = "", reasoning = "", summary = "", error = null)
+        it.copy(telemetry = Telemetry(), answer = "", reasoning = "", summary = "", error = null,
+            lastCompletedText = "", clearKvOnNextPrompt = false)
     }
 
     fun update(block: (UiState) -> UiState) = _state.update(block)

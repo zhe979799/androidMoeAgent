@@ -63,21 +63,37 @@ class RunService : Service() {
     // The CPU thermal-zone `temp` node, discovered once on the first sample and reused thereafter.
     @Volatile private var cpuThermalZone: File? = null
 
-    private data class Req(val prompt: String, val nPredict: Int, val think: Boolean, val clearKv: Boolean)
+    private data class Req(
+        val prompt: String,
+        val nPredict: Int,
+        val think: Boolean,
+        val clearKv: Boolean,
+        // The foreground network-agent loop sends internal prompts and tool follow-ups through this
+        // same warm session. Their control turns must not appear in the user-facing transcript.
+        val displayPrompt: String?,
+        val suppressTranscript: Boolean,
+    )
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_GENERATE -> sendGenerate(reqFrom(intent))
-            ACTION_CANCEL -> send("""{"cmd":"cancel"}""")
+            ACTION_CANCEL -> cancelCurrent()
             ACTION_SHUTDOWN -> shutdownSession()
             else -> startSession(intent)
         }
         return START_NOT_STICKY
     }
 
-    // ── session lifecycle ──
+    private fun cancelCurrent() {
+        if (RunBus.state.value.loading) {
+            shutdownSession()
+        } else {
+            send("""{"cmd":"cancel"}""")
+        }
+    }
+
 
     /** Context of the running session, parsed from its argv at start (see startSession). */
     private var sessionCtx = AppSettings.SESSION_CTX
@@ -121,7 +137,8 @@ class RunService : Service() {
             // thinkControl is a property of the model being loaded, so it goes the same way — the
             // incoming session reports its own at BMOE_READY.
             it.copy(state = EngineState.LOADING, error = null, sessionSig = sig, answer = "", summary = "",
-                transcript = emptyList(), streaming = streaming, ioMode = null, thinkControl = null)
+                transcript = emptyList(), streaming = streaming, ioMode = null, thinkControl = null,
+                generationId = it.generationId, lastCompletedText = "")
         }
 
         thread(name = "bmoe-session") { runSession(argv, model, myEpoch, dying) }
@@ -135,6 +152,7 @@ class RunService : Service() {
             // The superseded process must be gone before this one starts — see awaitExit. Done here
             // rather than in startSession because that runs on the main thread, which must not block.
             awaitExit(dying)
+            if (!current(myEpoch)) return
 
             val nativeDir = applicationInfo.nativeLibraryDir
             val pb = ProcessBuilder(argv)
@@ -172,7 +190,7 @@ class RunService : Service() {
             }
 
             BufferedReader(InputStreamReader(p.inputStream)).useLines { lines ->
-                lines.forEach { if (epoch == myEpoch) handleLine(it) }
+                lines.forEach { if (current(myEpoch)) handleLine(it) }
             }
 
             val code = p.waitFor()
@@ -334,21 +352,23 @@ class RunService : Service() {
                 val think = if (reasoning.isNotEmpty()) reasoning else it.reasoning
                 // Commit the assistant turn (skip a cancelled empty turn); the user turn was added on send.
                 val transcript =
-                    if (answer.isNotEmpty() || !cancelled)
+                    if (!activeReqSuppressTranscript && (answer.isNotEmpty() || !cancelled))
                         it.transcript + ChatTurn("assistant", answer, turnMetrics, think)
                     else it.transcript
                 it.copy(state = EngineState.READY, telemetry = tel, answer = "", reasoning = "",
-                    summary = summary, transcript = transcript)
+                    summary = summary, transcript = transcript, generationId = it.generationId + 1,
+                    lastCompletedText = answer)
             }
         }.onFailure { e ->
             // Commit whatever was streamed so the answer is not lost, say what happened, and go
             // back to READY. Anything else strands the session in a state only a restart clears.
             RunBus.update {
                 val transcript =
-                    if (it.answer.isNotEmpty())
+                    if (!activeReqSuppressTranscript && it.answer.isNotEmpty())
                         it.transcript + ChatTurn("assistant", it.answer, "", it.reasoning)
                     else it.transcript
                 it.copy(state = EngineState.READY, answer = "", reasoning = "", transcript = transcript,
+                    generationId = it.generationId + 1, lastCompletedText = it.answer,
                     error = "The engine's end-of-turn summary could not be read (${e.message}). " +
                         "The answer above is what streamed before it.")
             }
@@ -434,14 +454,28 @@ class RunService : Service() {
         nPredict = intent.getIntExtra(EXTRA_NPREDICT, AppSettings.DEFAULT_N_PREDICT),
         think = intent.getBooleanExtra(EXTRA_THINK, false),
         clearKv = intent.getBooleanExtra(EXTRA_CLEAR_KV, true),
+        displayPrompt = intent.getStringExtra(EXTRA_DISPLAY_PROMPT),
+        suppressTranscript = intent.getBooleanExtra(EXTRA_SUPPRESS_TRANSCRIPT, false),
     )
+
+    // Accessed only on the service's request-processing thread. BMOE_DONE is emitted in order, so
+    // it unambiguously describes this generation until the next request can be accepted.
+    @Volatile private var activeReqSuppressTranscript = false
 
     private fun sendGenerate(req: Req) {
         val id = nextId++
-        // Show the user's turn immediately. clear_kv = "new chat" resets the transcript to this turn.
+        activeReqSuppressTranscript = req.suppressTranscript
+        // Show a user turn only when this is a visible chat request. Agent control prompts and tool
+        // follow-ups use the same persistent process but must never masquerade as user text.
         RunBus.update {
-            val user = ChatTurn("user", req.prompt)
-            it.copy(transcript = if (req.clearKv) listOf(user) else it.transcript + user, answer = "")
+            val visibleUser = req.displayPrompt ?: req.prompt.takeIf { !req.suppressTranscript }
+            val transcript = when {
+                req.suppressTranscript -> it.transcript
+                visibleUser == null -> it.transcript
+                req.clearKv -> listOf(ChatTurn("user", visibleUser))
+                else -> it.transcript + ChatTurn("user", visibleUser)
+            }
+            it.copy(transcript = transcript, answer = "")
         }
         val json = buildString {
             append("""{"cmd":"generate","id":""").append(id)
@@ -466,6 +500,7 @@ class RunService : Service() {
 
     private fun shutdownSession() {
         shuttingDown = true
+        pending = null
         main.removeCallbacks(idleUnload)
         requestClose()
         main.postDelayed(forceKill, FORCE_KILL_MS)
@@ -592,6 +627,8 @@ class RunService : Service() {
         const val EXTRA_NPREDICT = "n_predict"
         const val EXTRA_THINK = "think"
         const val EXTRA_CLEAR_KV = "clear_kv"
+        const val EXTRA_DISPLAY_PROMPT = "display_prompt"
+        const val EXTRA_SUPPRESS_TRANSCRIPT = "suppress_transcript"
         private const val CHANNEL = "gen"
         private const val NOTIF_ID = 1
 

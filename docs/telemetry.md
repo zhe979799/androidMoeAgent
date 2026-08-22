@@ -209,6 +209,26 @@ prints just the summary lines.
 `--csv PATH` additionally writes a `#` preamble describing the run, then one row per token, then a
 `# summary ...` trailer. Intended for the benchmark sweep.
 
+The Android Agent UI renders a compact localized summary for each tool result and keeps the full
+JSON expandable; the model still receives the full structured result. The Toolkit catalog persists
+only selected registry IDs, and the coordinator rejects calls outside the resulting tool set. Agent
+control turns use a separate transcript from ordinary chat, and entering the Agent workspace does
+not start a model or network operation until the user confirms. The read-only registry can inspect
+network state, network capability/address snapshots, public DNS/HTTPS reachability, device/build,
+application, battery, thermal, memory, display, process-memory and model state, plus bounded app-file
+metadata and retained Agent-log metadata. Current session telemetry remains available through the
+performance group. If pasted log text is read, network tools are removed from the remaining Agent
+turn contract so untrusted log content cannot trigger an outbound observation. A foreground Android
+tuner additionally writes
+`autotune-<timestamp>.csv` in the same metrics
+folder. This is an app-level audit of a bounded comparison, not an engine metrics file: it records
+candidate, balanced order and repetition, the per-trial engine CSV basename, output equality against
+the first complete trial, start/end temperature when the service sampled it, status, and the exact
+resolved argv with the model path replaced. The tuner changes only cache and I/O-lane variants, uses
+fresh sessions, and recommends only a complete repeated candidate whose greedy output matches. It
+never changes persisted settings. Missing temperature readings and failed trials remain visible in
+the report; they are not silently treated as controlled evidence.
+
 ### Run-parameter preamble
 
 ```

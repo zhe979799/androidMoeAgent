@@ -24,6 +24,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -53,12 +56,16 @@ fun MetricsScreen(onBack: () -> Unit) {
     var selection by remember { mutableStateOf<List<File>>(emptyList()) }
     var view by remember { mutableStateOf(View.LIST) }
     var refresh by remember { mutableStateOf(0) }
+    var bundleError by remember { mutableStateOf<String?>(null) }
+    var bundleBusy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val files = remember(refresh) {
         File(context.getExternalFilesDir(null), "metrics")
             .listFiles { f -> f.name.endsWith(".csv") }
             ?.sortedByDescending { it.lastModified() }
             ?: emptyList()
     }
+    val agentLogs = remember(refresh) { AgentLog.files(context) }
 
     // Back always steps one level toward the list, then out of the screen.
     fun back() {
@@ -123,6 +130,7 @@ fun MetricsScreen(onBack: () -> Unit) {
             View.FILE -> picked?.let { CsvView(it, m) }
             View.LIST -> FileList(
                 files = files,
+                agentLogs = agentLogs,
                 selection = selection,
                 modifier = m,
                 onPick = { picked = it; view = View.FILE },
@@ -134,6 +142,38 @@ fun MetricsScreen(onBack: () -> Unit) {
                     }
                 },
                 onDelete = { f -> f.delete(); selection = selection - f; refresh++ },
+                onShareAgentLogs = { shareAgentLogs(context, agentLogs) },
+                onDeleteAgentLogs = { agentLogs.forEach { it.delete() }; refresh++ },
+                onExportBundle = {
+                    scope.launch {
+                        if (bundleBusy) return@launch
+                        bundleBusy = true
+                        bundleError = null
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                val root = context.getExternalFilesDir(null)
+                                    ?: error("App storage is unavailable")
+                                DiagnosticBundle.create(
+                                    File(root, "diagnostic-bundles"),
+                                    diagnosticBundleInputs(context),
+                                    BuildConfig.VERSION_NAME,
+                                    BuildConfig.VERSION_CODE,
+                                    BuildConfig.GIT_SHA,
+                                )
+                            }
+                        }.onSuccess { bundle ->
+                            if (!DiagnosticBundle.share(context, bundle)) {
+                                bundleError = "Could not open the system share panel. The bundle remains in Metrics."
+                            }
+                        }.onFailure { error ->
+                            bundleError = error.message ?: "Could not create diagnostic bundle"
+                        }
+                        bundleBusy = false
+                        refresh++
+                    }
+                },
+                bundleBusy = bundleBusy,
+                bundleError = bundleError,
             )
         }
     }
@@ -142,28 +182,76 @@ fun MetricsScreen(onBack: () -> Unit) {
 @Composable
 private fun FileList(
     files: List<File>,
+    agentLogs: List<File>,
     selection: List<File>,
     modifier: Modifier,
     onPick: (File) -> Unit,
     onToggle: (File) -> Unit,
     onDelete: (File) -> Unit,
+    onShareAgentLogs: () -> Unit,
+    onDeleteAgentLogs: () -> Unit,
+    onExportBundle: () -> Unit,
+    bundleBusy: Boolean,
+    bundleError: String?,
 ) {
-    if (files.isEmpty()) {
-        Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("No metrics yet.", fontWeight = FontWeight.Medium)
-            Text(
-                "Turn on Settings → Diagnostics → Metrics CSV, then run a prompt. One file is written " +
-                    "per session, covering every turn in it. Tick two to compare them.",
-                fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        return
-    }
+    val noDiagnostics = files.isEmpty() && agentLogs.isEmpty()
     val stamp = SimpleDateFormat("d MMM HH:mm:ss", Locale.getDefault())
     // A run's identity, not its filename: the model's initial and each turn's tok/s, read from the
     // preamble and summaries. Computed once per file list — the files are small and few.
     val titles = remember(files) { files.associateWith { runTitle(it) } }
     LazyColumn(modifier.fillMaxSize()) {
+        item {
+            ListItem(
+                headlineContent = { Text("Diagnostic bundle", fontWeight = FontWeight.Medium) },
+                supportingContent = {
+                    Column {
+                        Text("ZIP of retained agent logs, performance CSVs and a sanitized manifest. No pasted log source text or model files; requests, answers and network metadata may be included.", fontSize = 11.sp)
+                        TextButton(onClick = onExportBundle, enabled = !bundleBusy) {
+                            Text(if (bundleBusy) "Preparing…" else "Export and share")
+                        }
+                        bundleError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+                    }
+                },
+            )
+            HorizontalDivider()
+        }
+        if (noDiagnostics) {
+            item {
+                Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("No diagnostics yet.", fontWeight = FontWeight.Medium)
+                    Text(
+                        "Turn on Settings → Diagnostics → Metrics CSV, then run a prompt. Network analysis also saves an agent log automatically.",
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (agentLogs.isNotEmpty()) {
+            item {
+                ListItem(
+                    headlineContent = { Text("${agentLogs.size} agent logs", fontWeight = FontWeight.Medium) },
+                    supportingContent = {
+                        Column {
+                            Text("Auto-saved locally; pasted log text is omitted. Share through Mail, Files or Drive.", fontSize = 11.sp)
+                            Row {
+                                TextButton(onClick = onShareAgentLogs) { Text("Share") }
+                                TextButton(onClick = onDeleteAgentLogs) { Text("Delete all") }
+                            }
+                        }
+                    },
+                )
+                HorizontalDivider()
+            }
+        }
+        if (files.isEmpty()) {
+            item {
+                Text(
+                    "No performance CSVs yet. Enable Settings → Diagnostics → Metrics CSV and run a prompt.",
+                    Modifier.padding(24.dp), fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         items(files) { f ->
             val title = titles[f].orEmpty()
             ListItem(

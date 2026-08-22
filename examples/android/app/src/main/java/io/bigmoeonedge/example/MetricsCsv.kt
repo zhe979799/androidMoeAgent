@@ -139,14 +139,21 @@ internal fun pearson(a: List<Float?>, b: List<Float?>): Float? {
 }
 
 /** Hand the files to another app as content:// URIs (see the FileProvider in the manifest). */
-internal fun shareCsv(context: Context, files: List<File>) {
+private fun shareFiles(context: Context, files: List<File>, mimeType: String, title: String) {
+    if (files.isEmpty()) return
     val uris = ArrayList(files.map {
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it)
     })
     val intent = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
-        type = "text/csv"
+        type = mimeType
         if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris[0]) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
-    runCatching { context.startActivity(Intent.createChooser(intent, "Share metrics").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    runCatching { context.startActivity(Intent.createChooser(intent, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }
+
+internal fun shareCsv(context: Context, files: List<File>) =
+    shareFiles(context, files, "text/csv", "Share metrics")
+
+internal fun shareAgentLogs(context: Context, files: List<File>) =
+    shareFiles(context, files, "application/json", "Share agent logs")

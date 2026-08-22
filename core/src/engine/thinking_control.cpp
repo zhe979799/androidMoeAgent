@@ -89,11 +89,10 @@ ThinkControl probe_think_control(const common_chat_templates * tmpls) {
         if (owns_span) {
             if (prefilled != off) {
                 size_t close_end = std::string::npos;
-                for (const std::string & tag : off_p.thinking_end_tags) {
-                    const size_t at = tag.empty() ? std::string::npos : prefilled.rfind(tag);
-                    if (at != std::string::npos && (close_end == std::string::npos || at + tag.size() > close_end)) {
-                        close_end = at + tag.size();
-                    }
+                const std::string & tag = off_p.thinking_end_tag;
+                const size_t at = tag.empty() ? std::string::npos : prefilled.rfind(tag);
+                if (at != std::string::npos) {
+                    close_end = at + tag.size();
                 }
                 if (close_end != std::string::npos &&
                     prefilled.find_first_not_of(" \t\r\n", close_end) != std::string::npos) {

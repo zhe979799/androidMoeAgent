@@ -51,8 +51,8 @@ android {
         applicationId 'io.bigmoeonedge.example'
         minSdk 29
         targetSdk 34
-        versionCode 35
-        versionName '0.20.0'
+        versionCode 43
+        versionName '0.21.7'
         buildConfigField 'String', 'GIT_SHA', "\"${gitSha}\""
         ndk {
             // The engine ships as prebuilt arm64 binaries staged by build-android.ps1.
@@ -74,7 +74,7 @@ android {
     productFlavors {
         dev {
             dimension 'distribution'
-            applicationIdSuffix '.dev'
+            applicationIdSuffix '.devagent'
             versionNameSuffix '-dev'
             buildConfigField 'boolean', 'SHARED_STORAGE', 'true'
         }
@@ -136,4 +136,8 @@ dependencies {
     implementation 'androidx.compose.material:material-icons-core'
     debugImplementation 'androidx.compose.ui:ui-tooling'
     implementation 'androidx.compose.ui:ui-tooling-preview'
+
+    testImplementation 'junit:junit:4.13.2'
+    // Android supplies org.json at runtime; the JVM protocol tests need a real implementation.
+    testImplementation 'org.json:json:20231013'
 }

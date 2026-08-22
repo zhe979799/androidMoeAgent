@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -85,6 +86,7 @@ fun AddModelSection(
     // A catalog failure belongs to the row whose button was tapped: filename -> message. Reported
     // at the bottom of the card it would surface under a different heading entirely.
     var rowError by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var sourceMode by rememberSaveable { mutableStateOf(ModelCatalog.SourceMode.AUTO) }
 
     // The raw on-disk view, shards included: `models` is the SELECTABLE list (non-first shards
     // hidden), but a sharded catalog entry is on-device only when every shard file is.
@@ -120,7 +122,10 @@ fun AddModelSection(
         ModelDownloader.events(context).collect { ev ->
             when (ev) {
                 is ModelDownloader.Event.InFlight -> progress = ev.downloads
-                is ModelDownloader.Event.Completed -> onModelReady()
+                is ModelDownloader.Event.Completed -> {
+                    error = null
+                    onModelReady()
+                }
                 is ModelDownloader.Event.Failed -> error = "${ev.name}: ${ev.reason}"
             }
         }
@@ -145,6 +150,15 @@ fun AddModelSection(
             }
 
             if (isOpen) {
+                Text("Download source", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ModelCatalog.SourceMode.entries.forEach { mode ->
+                        FilterChip(selected = sourceMode == mode, onClick = { sourceMode = mode }, label = { Text(mode.label) })
+                    }
+                }
                 ModelCatalog.entries.forEach { e ->
                     CatalogRow(
                         entry = e,
@@ -153,13 +167,14 @@ fun AddModelSection(
                         installShown = showInstall == e.fileName,
                         error = rowError?.takeIf { it.first == e.fileName }?.second,
                         onToggleInstall = { showInstall = if (showInstall == e.fileName) null else e.fileName },
+                        mode = sourceMode,
                         onDownload = {
                             error = null
                             rowError = null
                             val res = if (e.shards.isNotEmpty()) {
-                                ModelDownloader.enqueueShards(context, e)
+                                ModelDownloader.enqueueShards(context, e, sourceMode)
                             } else {
-                                ModelDownloader.enqueue(context, e.url ?: "", e.fileName, e.approxBytes)
+                                ModelDownloader.enqueueCandidates(context, ModelCatalog.sourcesOf(e), e.fileName, e.approxBytes, sourceMode)
                             }
                             res.onFailure {
                                 rowError = e.fileName to (it.message ?: "download failed to start")
@@ -302,7 +317,10 @@ private fun DeleteModelDialog(
         onDismissRequest = onDismiss,
         title = { Text("Delete $fileName?") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 if (isLoaded) {
                     Text(
                         "This model is loaded. Start a new chat (or switch models) before deleting it.",
@@ -347,6 +365,7 @@ private fun CatalogRow(
     installShown: Boolean,
     error: String?,
     onToggleInstall: () -> Unit,
+    mode: ModelCatalog.SourceMode,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
@@ -395,6 +414,9 @@ private fun CatalogRow(
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (status == ModelCatalog.Status.AVAILABLE && entry.url != null) {
+            Text("Source: ${mode.label}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         if (error != null) {
             Text(error, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
         }
@@ -439,6 +461,9 @@ private fun DownloadProgress(
     // counter, which is the part the user actually watches.
     if (showName) {
         Text(p.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+    if (p.source != null) {
+        Text("Source: ${p.source}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     Text(
         when {

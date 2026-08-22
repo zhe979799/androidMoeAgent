@@ -38,8 +38,25 @@ object ModelCatalog {
         val shards: List<Shard> = emptyList(),
     )
 
+    data class SourceCandidate(val label: String, val url: String)
+
+    enum class SourceMode(val label: String) {
+        AUTO("Auto"),
+        OFFICIAL("Official"),
+        MAINLAND_MIRROR("Mainland mirror"),
+    }
+
+    /** Ordered candidates are data, so a catalog update can replace a mirror without changing policy. */
+    fun candidates(officialUrl: String): List<SourceCandidate> {
+        val official = SourceCandidate("Official", officialUrl)
+        val mirror = officialUrl.replace("https://huggingface.co/", "https://hf-mirror.com/")
+        return listOf(official, SourceCandidate("Mainland mirror", mirror)).distinctBy { it.url }
+    }
+
     /** One file of a sharded entry. [bytes] is exact (from the repository), not approximate. */
-    data class Shard(val fileName: String, val url: String, val bytes: Long)
+    data class Shard(val fileName: String, val url: String, val bytes: Long) {
+        val sources: List<SourceCandidate> get() = candidates(url)
+    }
 
     /**
      * Every on-disk name this entry can own: its own file plus any shards. The entry's [Entry.fileName]
@@ -164,6 +181,14 @@ object ModelCatalog {
 
     /** Size for the row label. */
     fun sizeLabel(e: Entry): String = "~" + gbLabel(e.approxBytes)
+
+    fun sourcesOf(e: Entry): List<SourceCandidate> = e.url?.let(::candidates) ?: emptyList()
+
+    fun selectSources(candidates: List<SourceCandidate>, mode: SourceMode): List<SourceCandidate> = when (mode) {
+        SourceMode.AUTO -> candidates
+        SourceMode.OFFICIAL -> candidates.filter { it.label == "Official" || it.label == "Direct" }.take(1)
+        SourceMode.MAINLAND_MIRROR -> candidates.filter { it.label == "Mainland mirror" }.take(1)
+    }
 
     /**
      * Status of one entry. [present] is the scanned model list (any scan dir counts, so a merged
