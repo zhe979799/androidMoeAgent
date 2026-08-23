@@ -538,7 +538,7 @@ fun AgentToolsCard(
                     Text("Agent 观测", fontWeight = FontWeight.Bold)
                     Text(
                         when {
-                            (ui?.agentRunId ?: 0L) > 0L -> "本次授权 ${ui?.agentAllowedTools?.size ?: 0} 个工具 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
+                            (ui?.agentRunId ?: 0L) > 0L -> "本次授权 ${ui?.agentAllowedTools?.size ?: 0} 个工具 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用 · 压缩 ${ui?.agentCompactions ?: 0} 次"
                             toolkitIds.isNotEmpty() -> "已启用 ${toolkitIds.size} 个工具集 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
                             else -> "未启用设备工具 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
                         },
@@ -565,6 +565,33 @@ fun AgentToolsCard(
                 }
             }
             status?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            ui?.let { agentUi ->
+                if (agentUi.agentAllowedTools.isNotEmpty()) {
+                    val injected = agentUi.agentAllowedTools.toList().sorted()
+                    Text("本次注入工具", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        injected.joinToString(" · ") { ToolkitCatalog.toolTitle(it) },
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    var promptExpanded by rememberSaveable(agentUi.agentRunId) { mutableStateOf(false) }
+                    TextButton(
+                        onClick = { promptExpanded = !promptExpanded },
+                        contentPadding = PaddingValues(0.dp),
+                    ) { Text(if (promptExpanded) "收起注入提示词" else "查看注入提示词", fontSize = 12.sp) }
+                    if (promptExpanded && agentUi.agentPromptPreview.isNotBlank()) {
+                        SelectionContainer {
+                            Text(
+                                agentUi.agentPromptPreview,
+                                Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
             ui?.let { state ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(

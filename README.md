@@ -88,8 +88,11 @@ the box. Phones stay the focus, because that is where memory is tightest.
 
 No build needed. Install the APK from the
 [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), open the **Get a
-model** card, and tap one of the catalog entries: Qwen3-30B-A3B (~18.6 GB), Qwen3.6-35B-A3B
-(~22.3 GB) or Gemma-4-26B-A4B (~17 GB), each past most phones' RAM. The catalog is only a
+model** card, and tap one of the catalog entries: Qwen3.5-122B-A10B-IQ2_M (~44.4 GB),
+Ling 3.0 Flash IQ2_M (~43.6 GB), Qwen3-30B-A3B (~18.6 GB),
+Qwen3-Coder-30B-A3B-Instruct (~18.6 GB), Qwen3.6-35B-A3B (~22.3 GB),
+Gemma-4-26B-A4B (~17 GB), gpt-oss-20b (~11.7 GB) or gpt-oss-120b MXFP4 (~63.4 GB from ModelScope).
+The larger entries are past most phones' RAM. The catalog is only a
 shortcut: the downloader takes any direct gguf URL, so any model from the
 [supported architecture families](#supported-models) streams the same way. When the download
 finishes, pick the model and chat. The telemetry panel shows tok/s and the compute-vs-flash

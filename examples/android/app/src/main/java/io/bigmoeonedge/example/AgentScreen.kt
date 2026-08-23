@@ -55,6 +55,8 @@ fun AgentScreen(
     val ui by RunBus.state.collectAsStateWithLifecycle()
     var request by rememberSaveable { mutableStateOf("请自动检查当前网络状态，并用中文给出最可能的原因和下一步建议。") }
     var selectedLog by rememberSaveable { mutableStateOf("") }
+    var systemMessage by rememberSaveable { mutableStateOf(AgentPreferences.load(context)) }
+    var savedSystemMessage by rememberSaveable { mutableStateOf(systemMessage) }
     val allowedTools = ToolkitCatalog.toolsFor(toolkitIds, selectedLog.isNotBlank())
     val selected = models.getOrNull(modelIdx.coerceIn(0, (models.size - 1).coerceAtLeast(0)))
     val listState = rememberLazyListState()
@@ -148,6 +150,34 @@ fun AgentScreen(
                     minLines = 2,
                 )
                 OutlinedTextField(
+                    value = systemMessage,
+                    onValueChange = { systemMessage = it.take(AgentPreferences.MAX_SYSTEM_MESSAGE_CHARS) },
+                    label = { Text("SystemMessage（可选）") },
+                    supportingText = { Text("留空使用内置 Agent 规则；工具注入会默认追加在后面。") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    minLines = 4,
+                    maxLines = 10,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            systemMessage = ""
+                            AgentPreferences.save(context, "")
+                            savedSystemMessage = ""
+                        },
+                        enabled = systemMessage.isNotEmpty() || savedSystemMessage.isNotEmpty(),
+                    ) { Text("恢复默认") }
+                    TextButton(
+                        onClick = {
+                            val normalized = AgentPreferences.normalize(systemMessage)
+                            systemMessage = normalized
+                            AgentPreferences.save(context, normalized)
+                            savedSystemMessage = normalized
+                        },
+                        enabled = AgentPreferences.normalize(systemMessage) != savedSystemMessage,
+                    ) { Text("保存 SystemMessage") }
+                }
+                OutlinedTextField(
                     value = selectedLog,
                     onValueChange = { selectedLog = it.take(32 * 1024) },
                     label = { Text("可选：粘贴一段日志") },
@@ -159,7 +189,11 @@ fun AgentScreen(
                     Button(
                         onClick = {
                             selected?.let {
-                                coordinator.start(context, it, settings, request, selectedLog, allowedTools)
+                                val normalized = AgentPreferences.normalize(systemMessage)
+                                systemMessage = normalized
+                                AgentPreferences.save(context, normalized)
+                                savedSystemMessage = normalized
+                                coordinator.start(context, it, settings, request, selectedLog, allowedTools, normalized)
                             }
                         },
                         enabled = selected != null && !ui.busy && !ui.agentActive,
@@ -169,7 +203,17 @@ fun AgentScreen(
                         TextButton(
                             onClick = {
                                 coordinator.cancel()
-                                RunBus.update { it.copy(agentTranscript = emptyList(), agentTools = emptyList(), agentStatus = null, agentError = null, error = null) }
+                                RunBus.update {
+                                    it.copy(
+                                        agentTranscript = emptyList(),
+                                        agentTools = emptyList(),
+                                        agentAllowedTools = emptySet(),
+                                        agentPromptPreview = "",
+                                        agentStatus = null,
+                                        agentError = null,
+                                        error = null,
+                                    )
+                                }
                             },
                             enabled = !ui.agentActive && ui.agentTranscript.isNotEmpty(),
                             modifier = Modifier.weight(1f),

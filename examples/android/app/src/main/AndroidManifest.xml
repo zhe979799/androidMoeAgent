@@ -13,6 +13,7 @@
     <!-- Foreground Network analysis reads the active link and DNS metadata through
          ConnectivityManager. It cannot change a network or obtain Wi-Fi credentials. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- No broad storage permission here: models arrive through the in-app URL downloader or
          the system file picker, both writing to the app-internal models dir (filesDir, a real
          filesystem where O_DIRECT works). The dev flavor overlay (src/dev/AndroidManifest.xml)

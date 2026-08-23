@@ -160,6 +160,10 @@ fun AddModelSection(
                     }
                 }
                 ModelCatalog.entries.forEach { e ->
+                    val sourceAvailable = ModelCatalog.selectSources(
+                        ModelCatalog.sourceCandidatesOf(e),
+                        sourceMode,
+                    ).isNotEmpty()
                     CatalogRow(
                         entry = e,
                         status = ModelCatalog.statusOf(e, present, progress.keys),
@@ -168,6 +172,7 @@ fun AddModelSection(
                         error = rowError?.takeIf { it.first == e.fileName }?.second,
                         onToggleInstall = { showInstall = if (showInstall == e.fileName) null else e.fileName },
                         mode = sourceMode,
+                        sourceAvailable = sourceAvailable,
                         onDownload = {
                             error = null
                             rowError = null
@@ -366,6 +371,7 @@ private fun CatalogRow(
     error: String?,
     onToggleInstall: () -> Unit,
     mode: ModelCatalog.SourceMode,
+    sourceAvailable: Boolean,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
@@ -386,8 +392,12 @@ private fun CatalogRow(
             Spacer(Modifier.width(8.dp))
             when (status) {
                 ModelCatalog.Status.AVAILABLE ->
-                    Button(onClick = onDownload, contentPadding = PaddingValues(horizontal = 16.dp)) {
-                        Text("Download", maxLines = 1, softWrap = false)
+                    Button(
+                        onClick = onDownload,
+                        enabled = sourceAvailable,
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                    ) {
+                        Text(if (sourceAvailable) "Download" else "Unavailable", maxLines = 1, softWrap = false)
                     }
                 ModelCatalog.Status.DOWNLOADING ->
                     TextButton(onClick = onCancel) { Text("Cancel", maxLines = 1, softWrap = false) }
@@ -486,4 +496,3 @@ private fun DownloadProgress(
     }
     onCancel?.let { TextButton(onClick = it) { Text("Cancel") } }
 }
-

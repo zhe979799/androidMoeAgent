@@ -31,6 +31,13 @@ class NetworkAgentProtocolTest {
         assertNotNull(NetworkAgentProtocol.parseToolCall(
             """{"tool_call":{"name":"read_selected_log","arguments":{"max_bytes":1024}}}"""
         ))
+        assertNotNull(NetworkAgentProtocol.parseToolCall(
+            """{"tool_call":{"name":"search_baidu","arguments":{"query":"Android 15"}}}"""
+        ))
+        assertNull(NetworkAgentProtocol.parseToolCall(
+            """{"tool_call":{"name":"search_baidu","arguments":{"query":"Android 15"}}}""",
+            setOf("network_state"),
+        ))
     }
 
     @Test
@@ -86,6 +93,39 @@ class NetworkAgentProtocolTest {
         assertTrue("process_memory" in NetworkTools.names)
         assertTrue("agent_history" in NetworkTools.names)
         assertTrue("app_files" in NetworkTools.names)
+        assertTrue("search_exa" in NetworkTools.names)
+        assertTrue("run_script" in NetworkTools.names)
+        assertTrue("file_read" in NetworkTools.names)
+    }
+
+    @Test
+    fun customSystemMessageIsKeptBeforeTheAppendedToolInjection() {
+        val prompt = NetworkAgentProtocol.initialPrompt(
+            "check the connection",
+            setOf("network_state"),
+            "你是一个简洁的中文助手。",
+        )
+
+        assertTrue(prompt.contains("你是一个简洁的中文助手。"))
+        assertTrue(prompt.contains("Appended tool injection"))
+        assertTrue(prompt.indexOf("你是一个简洁的中文助手。") < prompt.indexOf("Appended tool injection"))
+        assertTrue(prompt.contains("network_state"))
+        assertTrue(!prompt.contains("device_info"))
+    }
+
+    @Test
+    fun compressionPromptsKeepEvidenceBoundedAndPreserveEnabledTools() {
+        val evidence = (1..8).map {
+            ToolResult("search_bing", "{\"title\":\"result-$it\",\"snippet\":\"data\"}", "搜索结果")
+        }
+        val compression = NetworkAgentProtocol.compressionPrompt("find the cause", evidence)
+        assertTrue(compression.contains("事实摘要"))
+        assertTrue(compression.length < 8_000)
+        val compact = NetworkAgentProtocol.compactPrompt("find the cause", listOf(
+            ToolResult("fact_summary", "事实：网络可达；DNS 正常", "模型压缩的事实摘要"),
+        ), setOf("search_bing"))
+        assertTrue(compact.contains("search_bing"))
+        assertTrue(compact.contains("模型压缩的事实摘要"))
     }
 
     @Test

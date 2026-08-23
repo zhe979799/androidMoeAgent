@@ -7,6 +7,12 @@ Semantic Versioning.
 ## [0.21.7] - 2026-08-22
 
 ### Added
+- **Custom Agent SystemMessage.** The Android Agent workspace now lets users edit and persist a
+  SystemMessage, restore the built-in default, and preview the effective prompt. Built-in safety
+  rules and the selected tool contract are appended after the custom message on every Agent turn.
+- **Agent tool expansion.** Added Baidu, Bing and Exa search, endpoint/DNS/TCP/HTTPS and Wi-Fi diagnostics, app-private script execution, and offset-based file listing/reading. The Agent workspace shows the injected tools and prompt-contract preview; when context approaches the session limit, the loaded model compresses evidence into a fact ledger before continuing. Disabling a toolkit removes its tools from both the prompt and executor.
+- **ModelScope model source.** The Android catalog now includes a dedicated single-file `gpt-oss-120b-MXFP4` entry from ModelScope, with an explicit source selector that cannot be applied to unrelated Hugging Face entries. The existing ModelScope community ranking remains the discovery path.
+- **Android model catalog coverage.** The built-in downloader now offers the capability-first Qwen3.5-122B-A10B IQ2_M and Ling 3.0 Flash IQ2_M GGUFs, alongside Qwen3-Coder-30B-A3B-Instruct Q4_K_M and gpt-oss-20b Q4_K_M. All catalog downloads are written to app-internal storage so the subprocess can read them under the app UID.
 - **Expanded local Agent tools.** Added read-only network capabilities and interface addresses, application/device/memory/display/thermal observations, process-memory metrics, and retained Agent-log metadata. All new tools use empty arguments, remain scoped to this app or the active public network, and are filtered through the same toolkit registry and executor validation.
 - **Extensible Agent toolkits.** The Agent registry includes optional performance observation and model-catalog groups in addition to network, device and log toolkits. The Agent can request current session telemetry or the local MoE model list only when those groups are enabled; registry and protocol tests cover the selection contract. App version 0.21.7 (versionCode 43).
 - **Agent session boundary and explicit launch.** Agent control turns now use a separate visible transcript, opening the workspace no longer starts inference or network observations automatically, ordinary chat no longer shows stale Agent errors/results, and the home network-analysis entry uses the persisted toolkit authorization. Loading can be cancelled from the primary action area.

@@ -22,17 +22,29 @@ differs.
 
 
 The Agent uses a short non-reasoning generation budget for control turns and has a three-minute foreground deadline. If a model still emits a reasoning wrapper, the app extracts only a strictly validated tool object and removes complete or truncated reasoning from the visible answer.
- Open **工具集** first to compose a scenario from the Network diagnostics, Device exploration, Log analysis, Performance observation and Model catalog groups. The choice is stored locally and only selected tools are described to the model or accepted by the registry. Choose a loaded model, review the task and press **开始诊断**; merely opening the workspace never starts inference or a network observation. Agent turns use a separate transcript from ordinary chat. The agent page keeps compact status summaries visible and lets you expand raw JSON only when inspecting details. The existing chat screen also retains an opt-in **Network analysis** switch. It is a bounded foreground workflow,
+ Open **工具集** first to compose a scenario from the Network diagnostics, Device exploration, Log analysis, Performance observation, Model catalog, Web search and Script execution groups. The choice is stored locally and only selected tools are described to the model or accepted by the registry. Choose a loaded model, review the task and press **开始诊断**; merely opening the workspace never starts inference or a network observation. Agent turns use a separate transcript from ordinary chat. The agent page keeps the injected tool list and prompt preview visible, with raw JSON expandable only when inspecting details. The existing chat screen also retains an opt-in **Network analysis** switch. It is a bounded foreground workflow,
 not a general Android agent: the already-loaded `bmoe-cli --session` remains the only inference
 owner, so the model and MoE expert cache remain warm across its model → tool → model turns. The app
-never starts a gateway, scheduler or background shell process for this feature.
+never starts a gateway, scheduler or background shell process for this feature. Script execution is off
+by default; when explicitly enabled, `run_script` runs in the app's private files directory with a
+bounded timeout and output size.
 
-The model can request at most **five** of the currently enabled read-only tools, one per turn, and every
-call plus its raw result remains visible in the chat UI. The optional Performance observation and
-Model catalog groups add `runtime_metrics` and `model_catalog`; disabling a group removes its tools
+The Agent workspace also accepts an optional user-authored **SystemMessage**. It is stored in the
+app's local preferences, can be restored to the built-in rules, and is applied to later Agent turns.
+The app's safety rules and the selected tool definitions are appended after that message, so the
+tool contract remains visible and follows the configured SystemMessage. Starting a diagnosis saves
+the current editor value as well as the explicit save action.
+
+The model can request at most **five** of the currently enabled tools, one per turn, and every
+call plus its raw result remains visible in the chat UI. The optional Performance observation,
+Model catalog and Web search groups add their own tools; disabling a group removes its tools
 from both the prompt and executor. Device exploration also exposes memory, process, thermal, display
 and application metadata; network diagnostics exposes capability and interface-address snapshots;
-log analysis exposes bounded history metadata without reading prior log contents.
+log analysis exposes bounded history metadata without reading prior log contents. Baidu and Bing
+search need no key; Exa is available after an API key is entered in 工具集.
+When the prompt history approaches the configured session context, the Agent asks the loaded model to
+compress tool evidence into a short fact ledger, clears the native KV context, and continues from that
+ledger instead of repeatedly injecting raw search or file output.
 
 - `network_state` — active transport, validation/captive-portal state, interface, routes and DNS;
 - `network_capabilities` — metered/roaming/VPN flags and advertised link bandwidth;
@@ -40,6 +52,8 @@ log analysis exposes bounded history metadata without reading prior log contents
 - `dns_lookup` — a public `A` or `AAAA` lookup through Android's resolver;
 - `ping_host` — 1–4 pings to a resolved public address with a 0.5–2 second per-packet deadline;
 - `http_probe` — `HEAD` or a range-limited `GET` to a public HTTPS URL on port 443;
+- `network_diagnose` — one endpoint pass covering DNS resolution, TCP connect and HTTPS response;
+- `wifi_info` — current Wi-Fi SSID/link speed/frequency/RSSI when Android exposes them;
 - `device_info` — Android release/SDK, device and app build metadata;
 - `app_info` — package, version, target SDK and whether app-owned directories are present;
 - `battery_state` — battery level, charging state, temperature and charge-counter reading;
@@ -53,11 +67,17 @@ log analysis exposes bounded history metadata without reading prior log contents
 - `model_catalog` — locally discovered MoE model names and sizes;
 - `read_selected_log` — up to 8 KiB of text the user explicitly pasted into the visible per-run log field;
 - `agent_history` — metadata of retained diagnostic logs; prior log contents are omitted.
+- `search_baidu` — public Baidu search titles, links and snippets;
+- `search_bing` — public Bing search titles, links and snippets;
+- `search_exa` — Exa semantic search results when its local API key is configured;
+- `run_script` — a short shell script in the app-private files directory, only when the group is enabled.
+- `file_list` — list app-private files and sizes;
+- `file_read` — read a text file in chunks using `offset`, `max_bytes` and the returned `next_offset`.
 
 Open **社区** on the home screen for the Chinese **ModelScope** discovery page. It fetches public model metadata in a bounded request, shows rank/download/like/update fields when supplied by the source, and links back to the community page. Results are discovery data rather than invented benchmark claims; download and install still require an explicit action in **Get a model**.
 
 The Agent workspace keeps a live **观测** panel visible while the model works: it reports whether the engine is loading, prefilling or generating, the number of tool calls, current token progress and available I/O/cache/temperature signals. Long raw tool JSON is constrained to a scrollable region, while the model still receives the complete structured result. The final diagnosis is prompted to distinguish facts, likely causes, confidence and safe next steps.
-The app validates tool JSON rather than giving the model a shell. Tool responses have a compact Chinese summary for the UI while the complete JSON remains expandable and is still passed to the model. It rejects private, loopback,
+The app validates tool JSON and only exposes explicitly enabled tool groups. Tool responses have a compact Chinese summary for the UI while the complete JSON remains expandable and is still passed to the model. It rejects private, loopback,
 link-local, multicast, reserved and unspecified destinations; pins each HTTPS TCP connection to
 its validated address (preventing DNS rebinding); disables redirects; and bounds DNS, time, ping,
 HTTP header and output sizes. The log tool has no filesystem access: it can see only text explicitly
@@ -65,7 +85,8 @@ pasted into the UI for that diagnosis. Tool output is framed as untrusted data, 
 After the Agent reads pasted log text, network tools are removed from the remaining turn contract so
 log contents cannot authorize a DNS, ping or HTTPS request.
 It cannot scan a network, change Wi-Fi/VPN/DNS/route settings, read credentials, access other apps,
-invoke Accessibility, use Root/Shizuku/SSH, or execute Python.
+invoke Accessibility, use Root/Shizuku/SSH, or start a background shell process. The opt-in script tool
+is limited to a foreground command in the app-private files directory.
 
 For a diagnosis, describe the symptom and target in the prompt, for example: “Wi-Fi is connected,
 but `https://example.com` times out while mobile data works. Find the smallest safe next check.”
@@ -146,10 +167,14 @@ The picker lists every MoE `.gguf` it finds (dense models are filtered out by a 
 check). Nothing below needs a storage permission except the last option.
 
 1. **Built-in catalog** (both flavors) — the "Get a model" card offers the models this engine
-   is measured on, each a single tap: **Qwen3-30B-A3B-Q4_K_M** (~18.6 GB, the reference model),
-   **Qwen3.6-35B-A3B-Q4_K_M** (~22.3 GB, a hybrid attention/SSM MoE, comfortably past device RAM)
-   and **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB). Select **Auto** to probe the ordered catalog sources,
-   or force **Official** or **Mainland mirror**. Auto fails over on connection/HTTP failure; every
+   is measured on, each a single tap: **Qwen3.5-122B-A10B-IQ2_M** (~44.4 GB, capability-first),
+   **Ling 3.0 Flash IQ2_M** (~43.6 GB, 512-expert `bailingmoe3`),
+   **Qwen3-30B-A3B-Q4_K_M** (~18.6 GB, the reference model),
+   **Qwen3-Coder-30B-A3B-Instruct-Q4_K_M** (~18.6 GB, coding-focused),
+   **Qwen3.6-35B-A3B-Q4_K_M** (~22.3 GB, a hybrid attention/SSM MoE, comfortably past device RAM),
+   **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB), **gpt-oss-20b-Q4_K_M** (~11.7 GB), and
+   **gpt-oss-120b-MXFP4** (~63.4 GB, a single-file ModelScope source). Select **Auto** to probe the ordered catalog sources,
+   or force **Official**, **Mainland mirror**, or **ModelScope** for the dedicated ModelScope row. Auto fails over on connection/HTTP failure; every
    redirect stays HTTPS and is checked against public addresses, while an attachment filename
    supplied by the final CDN response and the exact size are checked before it is accepted. Downloads run
    in a foreground worker, survive the app being killed, resume an interrupted transfer instead of

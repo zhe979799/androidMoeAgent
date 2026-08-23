@@ -18,6 +18,17 @@ class ModelDownloadSourcesTest {
     }
 
     @Test
+    fun recognizesModelScopeAsASeparateDirectSource() {
+        val url = "https://www.modelscope.cn/models/ggml-org/gpt-oss-120b-GGUF/resolve/master/gpt-oss-120b-MXFP4.gguf"
+        val sources = ModelCatalog.candidates(url)
+        assertEquals(listOf("ModelScope"), sources.map { it.label })
+        assertEquals(sources, ModelCatalog.selectSources(sources, ModelCatalog.SourceMode.AUTO))
+        assertEquals(sources, ModelCatalog.selectSources(sources, ModelCatalog.SourceMode.MODELSCOPE))
+        assertTrue(ModelCatalog.selectSources(sources, ModelCatalog.SourceMode.OFFICIAL).isEmpty())
+        assertTrue(ModelCatalog.selectSources(sources, ModelCatalog.SourceMode.MAINLAND_MIRROR).isEmpty())
+    }
+
+    @Test
     fun duplicateOrNonHuggingFaceSourcesRemainReplaceableAndOrdered() {
         val sources = ModelCatalog.candidates("https://example.com/model.gguf")
         assertEquals(1, sources.size)

@@ -8,6 +8,7 @@ data class ToolkitDefinition(
     val title: String,
     val description: String,
     val tools: Set<String>,
+    val defaultEnabled: Boolean = true,
 )
 
 object ToolkitCatalog {
@@ -16,7 +17,7 @@ object ToolkitCatalog {
             id = "network",
             title = "网络诊断",
             description = "网络状态、DNS、公共地址连通性和 HTTPS 响应信息。",
-            tools = setOf("network_state", "network_capabilities", "network_addresses", "dns_lookup", "ping_host", "http_probe"),
+            tools = setOf("network_state", "network_capabilities", "network_addresses", "dns_lookup", "ping_host", "http_probe", "network_diagnose", "wifi_info"),
         ),
         ToolkitDefinition(
             id = "device",
@@ -42,6 +43,25 @@ object ToolkitCatalog {
             description = "查看本地可用模型和内置社区目录的元数据。",
             tools = setOf("model_catalog"),
         ),
+        ToolkitDefinition(
+            id = "web_search",
+            title = "网络搜索",
+            description = "通过百度、Bing 或 Exa 查询公开网页标题、链接和摘要。",
+            tools = setOf("search_baidu", "search_bing", "search_exa"),
+        ),
+        ToolkitDefinition(
+            id = "shell",
+            title = "脚本执行",
+            description = "在应用私有目录执行用户明确授权的短脚本；默认关闭。",
+            tools = setOf("run_script"),
+            defaultEnabled = false,
+        ),
+        ToolkitDefinition(
+            id = "files",
+            title = "文件阅读",
+            description = "列出应用私有文件，并按偏移分段读取文本内容。",
+            tools = setOf("file_list", "file_read"),
+        ),
     )
 
     private val toolTitles = mapOf(
@@ -51,6 +71,8 @@ object ToolkitCatalog {
         "dns_lookup" to "DNS 查询",
         "ping_host" to "公共地址连通性",
         "http_probe" to "HTTPS 响应探测",
+        "network_diagnose" to "端点分层诊断",
+        "wifi_info" to "Wi-Fi 链路信息",
         "device_info" to "设备与版本信息",
         "app_info" to "应用信息",
         "battery_state" to "电池状态",
@@ -64,6 +86,12 @@ object ToolkitCatalog {
         "model_catalog" to "本地模型目录",
         "read_selected_log" to "用户粘贴日志",
         "agent_history" to "Agent 历史",
+        "search_baidu" to "百度搜索",
+        "search_bing" to "Bing 搜索",
+        "search_exa" to "Exa 搜索",
+        "run_script" to "脚本执行",
+        "file_list" to "文件列表",
+        "file_read" to "分段读文件",
     )
 
     fun toolTitle(id: String): String = toolTitles[id] ?: id
@@ -75,6 +103,8 @@ object ToolkitCatalog {
         "dns_lookup" -> "查询公开域名的 A/AAAA 记录"
         "ping_host" -> "对已验证的公开地址做有限次数探测"
         "http_probe" -> "读取公开 HTTPS 服务响应头"
+        "network_diagnose" -> "依次测量 DNS、TCP 和 HTTPS 响应"
+        "wifi_info" -> "Wi-Fi SSID、RSSI、频率和链路速率"
         "device_info" -> "Android、设备和应用版本信息"
         "app_info" -> "包名、版本、目标 SDK 和应用目录状态"
         "battery_state" -> "电量、充电状态和温度"
@@ -88,6 +118,12 @@ object ToolkitCatalog {
         "model_catalog" -> "本地 MoE 模型文件名和大小"
         "read_selected_log" -> "仅读取用户本次粘贴的日志文本"
         "agent_history" -> "仅查看历史诊断文件的大小和时间，不读取内容"
+        "search_baidu" -> "查询百度公开网页结果，不打开结果页面"
+        "search_bing" -> "查询 Bing 公开网页结果，不打开结果页面"
+        "search_exa" -> "通过 Exa API 查询语义搜索结果，不打开结果页面"
+        "run_script" -> "在应用私有目录执行短脚本并返回有限输出"
+        "file_list" -> "列出应用私有文件名、大小和修改时间"
+        "file_read" -> "按 offset 分段读取应用私有文本文件"
         else -> ""
     }
 
@@ -116,7 +152,8 @@ object ToolkitPreferences {
             ?.toSet()
         // An explicitly empty set is meaningful: it lets a user run a model-only Agent turn.
         // Only a missing preference means "enable the built-in defaults" on first launch.
-        return stored?.intersect(ToolkitCatalog.allIds) ?: ToolkitCatalog.allIds
+        return stored?.intersect(ToolkitCatalog.allIds)
+            ?: ToolkitCatalog.entries.filter { it.defaultEnabled }.mapTo(linkedSetOf()) { it.id }
     }
 
     fun save(context: Context, ids: Set<String>) {

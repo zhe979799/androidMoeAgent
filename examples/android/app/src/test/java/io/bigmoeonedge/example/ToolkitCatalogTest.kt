@@ -23,6 +23,9 @@ class ToolkitCatalogTest {
     fun everyRegisteredToolBelongsToTheAgentRegistry() {
         assertTrue(ToolkitCatalog.allTools.all { it in NetworkTools.names })
         assertEquals(ToolkitCatalog.allIds, ToolkitCatalog.entries.map { it.id }.toSet())
+        assertTrue("search_baidu" in ToolkitCatalog.toolsFor(setOf("web_search")))
+        assertTrue("run_script" in ToolkitCatalog.toolsFor(setOf("shell")))
+        assertTrue("file_read" in ToolkitCatalog.toolsFor(setOf("files")))
     }
 
     @Test
@@ -36,6 +39,16 @@ class ToolkitCatalogTest {
         ) != null)
         assertTrue(NetworkAgentProtocol.parseToolCall(call, emptySet()) == null)
         assertTrue(!NetworkAgentProtocol.initialPrompt("test", emptySet()).contains("device_info"))
+        assertTrue(!NetworkAgentProtocol.initialPrompt("test", emptySet()).contains("search_baidu"))
+        assertTrue(NetworkAgentProtocol.initialPrompt("test", setOf("search_bing")).contains("search_bing"))
+        assertTrue(NetworkAgentProtocol.parseToolCall(
+            """{"tool_call":{"name":"run_script","arguments":{"script":"echo hi"}}}""",
+            setOf("run_script"),
+        ) != null)
+        assertTrue(NetworkAgentProtocol.parseToolCall(
+            """{"tool_call":{"name":"file_read","arguments":{"path":"agent-logs/a.jsonl","offset":0,"max_bytes":512}}}""",
+            setOf("file_read"),
+        ) != null)
         assertTrue(NetworkAgentProtocol.parseToolCall(
             """{"tool_call":{"name":"http_probe","arguments":{"url":"https://example.com"}}}""",
             ToolkitCatalog.toolsFor(setOf("network", "logs"), true) - NetworkTools.networkToolNames,

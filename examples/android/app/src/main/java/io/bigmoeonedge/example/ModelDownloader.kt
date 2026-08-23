@@ -89,6 +89,7 @@ object ModelDownloader {
             ModelCatalog.SourceMode.AUTO -> candidates
             ModelCatalog.SourceMode.OFFICIAL -> candidates.filter { it.label == "Official" || it.label == "Direct" }.take(1)
             ModelCatalog.SourceMode.MAINLAND_MIRROR -> candidates.filter { it.label == "Mainland mirror" }.take(1)
+            ModelCatalog.SourceMode.MODELSCOPE -> candidates.filter { it.label == "ModelScope" }.take(1)
         }.also { require(it.isNotEmpty()) { "selected source is unavailable" } }
         val dir = ModelManager.internalModelsDir(ctx)
         val partial = File(dir, name + DownloadWorker.PART_SUFFIX).length()
@@ -165,6 +166,7 @@ object ModelDownloader {
         ModelCatalog.SourceMode.AUTO -> sources
         ModelCatalog.SourceMode.OFFICIAL -> sources.filter { it.label == "Official" }.take(1)
         ModelCatalog.SourceMode.MAINLAND_MIRROR -> sources.filter { it.label == "Mainland mirror" }.take(1)
+        ModelCatalog.SourceMode.MODELSCOPE -> sources.filter { it.label == "ModelScope" }.take(1)
     }.also { require(it.isNotEmpty()) { "selected source is unavailable" } }
 
     /**

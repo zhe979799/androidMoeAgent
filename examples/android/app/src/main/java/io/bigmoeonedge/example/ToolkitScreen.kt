@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 
 /** Choose optional capability groups before entering the Agent workspace. */
@@ -38,6 +39,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun ToolkitScreen(context: Context, onBack: () -> Unit, onOpenAgent: () -> Unit) {
     var enabled by remember { mutableStateOf(ToolkitPreferences.load(context)) }
+    var exaApiKey by remember { mutableStateOf(SearchPreferences.loadExaApiKey(context)) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -83,6 +85,34 @@ fun ToolkitScreen(context: Context, onBack: () -> Unit, onOpenAgent: () -> Unit)
                                     ToolkitPreferences.save(context, enabled)
                                 },
                             ) { Text("全部停用") }
+                        }
+                    }
+                }
+            }
+            if ("web_search" in enabled) {
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Exa API Key（可选）", style = MaterialTheme.typography.titleSmall)
+                            androidx.compose.material3.OutlinedTextField(
+                                value = exaApiKey,
+                                onValueChange = {
+                                    exaApiKey = it.take(256)
+                                    SearchPreferences.saveExaApiKey(context, exaApiKey)
+                                },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                "百度和 Bing 不需要密钥；Exa 只有在此处填写后才会执行。密钥不会注入提示词。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }

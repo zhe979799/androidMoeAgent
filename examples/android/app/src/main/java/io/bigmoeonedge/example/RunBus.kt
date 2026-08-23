@@ -56,6 +56,8 @@ data class UiState(
     val agentError: String? = null,
     val agentTools: List<AgentToolRecord> = emptyList(),
     val agentAllowedTools: Set<String> = emptySet(),
+    val agentPromptPreview: String = "",
+    val agentCompactions: Int = 0,
     val agentRunId: Long = 0,
 ) {
     val loading get() = state == EngineState.LOADING

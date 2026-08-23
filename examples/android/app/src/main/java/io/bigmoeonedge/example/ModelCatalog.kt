@@ -44,10 +44,14 @@ object ModelCatalog {
         AUTO("Auto"),
         OFFICIAL("Official"),
         MAINLAND_MIRROR("Mainland mirror"),
+        MODELSCOPE("ModelScope"),
     }
 
     /** Ordered candidates are data, so a catalog update can replace a mirror without changing policy. */
     fun candidates(officialUrl: String): List<SourceCandidate> {
+        if (officialUrl.startsWith("https://modelscope.cn/") || officialUrl.startsWith("https://www.modelscope.cn/")) {
+            return listOf(SourceCandidate("ModelScope", officialUrl))
+        }
         val official = SourceCandidate("Official", officialUrl)
         val mirror = officialUrl.replace("https://huggingface.co/", "https://hf-mirror.com/")
         return listOf(official, SourceCandidate("Mainland mirror", mirror)).distinctBy { it.url }
@@ -91,6 +95,24 @@ object ModelCatalog {
 
     val entries: List<Entry> = listOf(
         Entry(
+            title = "Qwen3.5-122B-A10B",
+            quant = "IQ2_M",
+            fileName = "Qwen_Qwen3.5-122B-A10B-IQ2_M.gguf",
+            approxBytes = 44_443_961_472L,
+            url = "https://huggingface.co/bartowski/Qwen_Qwen3.5-122B-A10B-GGUF/resolve/main/" +
+                "Qwen_Qwen3.5-122B-A10B-IQ2_M.gguf?download=true",
+            blurb = "122B total, about 10B active. The highest-capability phone experiment in this catalog.",
+        ),
+        Entry(
+            title = "Ling 3.0 Flash 127B-A5B",
+            quant = "IQ2_M",
+            fileName = "Ling-3.0-flash-IQ2_M.gguf",
+            approxBytes = 43_638_665_088L,
+            url = "https://huggingface.co/bartowski/Ling-3.0-flash-GGUF/resolve/main/" +
+                "Ling-3.0-flash-IQ2_M.gguf?download=true",
+            blurb = "bailingmoe3 with 512 experts. A high-capability BigMoe architecture experiment.",
+        ),
+        Entry(
             title = "Qwen3-30B-A3B",
             quant = "Q4_K_M",
             fileName = "Qwen3-30B-A3B-Q4_K_M.gguf",
@@ -98,6 +120,15 @@ object ModelCatalog {
             url = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/" +
                 "Qwen3-30B-A3B-Q4_K_M.gguf?download=true",
             blurb = "3B active of 30B. The published numbers use this one.",
+        ),
+        Entry(
+            title = "Qwen3-Coder-30B-A3B-Instruct",
+            quant = "Q4_K_M",
+            fileName = "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+            approxBytes = 18_556_689_568L,
+            url = "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/" +
+                "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf?download=true",
+            blurb = "Coding-focused MoE with 3B active of 30B. Download into app storage for direct I/O.",
         ),
         Entry(
             title = "Qwen3.6-35B-A3B",
@@ -116,6 +147,15 @@ object ModelCatalog {
             url = "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/main/" +
                 "google_gemma-4-26B-A4B-it-Q4_K_M.gguf?download=true",
             blurb = "4B active of 26B. Smaller experts — the gentlest start.",
+        ),
+        Entry(
+            title = "gpt-oss-20b",
+            quant = "Q4_K_M",
+            fileName = "openai_gpt-oss-20b-Q4_K_M.gguf",
+            approxBytes = 11_673_418_816L,
+            url = "https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/" +
+                "openai_gpt-oss-20b-Q4_K_M.gguf?download=true",
+            blurb = "Compact reasoning MoE. The GGUF is about 11.7 GB and fits the phone's internal storage budget.",
         ),
         Entry(
             title = "gpt-oss-120b",
@@ -141,6 +181,15 @@ object ModelCatalog {
                     13_137_819_360L,
                 ),
             ),
+        ),
+        Entry(
+            title = "gpt-oss-120b · ModelScope",
+            quant = "MXFP4",
+            fileName = "gpt-oss-120b-MXFP4.gguf",
+            approxBytes = 63_387_346_208L,
+            url = "https://www.modelscope.cn/models/ggml-org/gpt-oss-120b-GGUF/resolve/master/" +
+                "gpt-oss-120b-MXFP4.gguf",
+            blurb = "Domestic single-file source. Native MXFP4, 5B active of 117B.",
         ),
         Entry(
             title = "DeepSeek V4 Flash",
@@ -184,10 +233,18 @@ object ModelCatalog {
 
     fun sourcesOf(e: Entry): List<SourceCandidate> = e.url?.let(::candidates) ?: emptyList()
 
+    /** Sources used to decide whether the current global source mode can download this entry. */
+    fun sourceCandidatesOf(e: Entry): List<SourceCandidate> = when {
+        e.url != null -> candidates(e.url)
+        e.shards.isNotEmpty() -> e.shards.first().sources
+        else -> emptyList()
+    }
+
     fun selectSources(candidates: List<SourceCandidate>, mode: SourceMode): List<SourceCandidate> = when (mode) {
         SourceMode.AUTO -> candidates
         SourceMode.OFFICIAL -> candidates.filter { it.label == "Official" || it.label == "Direct" }.take(1)
         SourceMode.MAINLAND_MIRROR -> candidates.filter { it.label == "Mainland mirror" }.take(1)
+        SourceMode.MODELSCOPE -> candidates.filter { it.label == "ModelScope" }.take(1)
     }
 
     /**
