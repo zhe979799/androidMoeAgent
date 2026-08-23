@@ -35,6 +35,12 @@ Semantic Versioning.
   with its local Gradle configuration, allowing development APKs built on different workstations to
   update in place. The release workflow still replaces it with the separate repository-secret key.
 
+### Fixed
+- **Native GPT-OSS tool dispatch.** The first native Harmony Agent turn now requires one enabled
+  function call, while later turns return to automatic tool selection. The native developer contract
+  explicitly rejects the legacy JSON wrapper, and a missing first-turn call is reported instead of
+  being marked as a successful free-form conclusion.
+
 ## [0.21.6] - 2026-08-22
 
 ### Added

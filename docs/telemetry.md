@@ -240,6 +240,9 @@ returns `tool_calls` in `BMOE_DONE`; an empty array means the turn ended with or
 GPT-OSS uses this path for Harmony `developer`/`tool` roles, channel-aware parsing and template
 arguments such as `reasoning_effort`. Requests that
 omit these fields keep the legacy single-string prompt behavior.
+The Android Agent sets `tool_choice=required` on its first native GPT-OSS turn when at least one
+tool is enabled, then returns to `auto` after a tool result. A first turn with no valid native call
+is recorded as `missing_tool_call` rather than being accepted as an evidence-free Agent conclusion.
 
 Android also writes a bounded `inference-logs/inference-*.jsonl` trace for every generation. Each
 trace has a `start` event with the exact prompt or structured message/tool payload and a `finish`

@@ -57,6 +57,27 @@ class NetworkAgentProtocolTest {
     }
 
     @Test
+    fun nativeHarmonyRequiresEvidenceOnTheFirstTurnOnly() {
+        assertEquals("required", NetworkAgentProtocol.nativeToolChoice(0, setOf("file_list")))
+        assertEquals("auto", NetworkAgentProtocol.nativeToolChoice(1, setOf("file_list")))
+        assertEquals("auto", NetworkAgentProtocol.nativeToolChoice(0, emptySet()))
+    }
+
+    @Test
+    fun nativeHarmonyPreviewUsesTheNativeContractAfterCustomText() {
+        val preview = NetworkAgentProtocol.nativeDeveloperMessage(
+            "Use a short Chinese answer.",
+            setOf("file_list"),
+        )
+
+        assertTrue(preview.indexOf("Use a short Chinese answer.") < preview.indexOf("# App-enforced Agent contract"))
+        assertTrue(preview.contains("native Harmony"))
+        assertTrue(preview.contains("function-call interface"))
+        assertTrue(preview.contains("file_list"))
+        assertTrue(!preview.contains("The only valid tool-call format is:"))
+    }
+
+    @Test
     fun extractsToolCallWrappedInModelThinking() {
         val call = NetworkAgentProtocol.parseToolCall(
             "<think>先检查网络。示例格式如下。</think>\n" +

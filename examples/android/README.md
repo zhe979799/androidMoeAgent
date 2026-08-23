@@ -26,9 +26,12 @@ that request after tokenizing the rendered prompt, so a large value is safe: it 
 room that remains after the prompt. GPT-OSS models use their native Harmony message/template path: the
 saved Agent message is a developer instruction, the console exposes Harmony reasoning effort (`low`,
 `medium`, `high`), enabled tools are passed as function schemas, and tool results return as structured
-tool messages. Other architectures keep the bounded JSON prompt fallback. If a model still emits a
-reasoning wrapper, the app extracts only a strictly validated tool object and removes complete or
-truncated reasoning from the visible answer.
+tool messages. The first native Agent turn requires one enabled function call to establish evidence;
+later turns use `auto` so the model can finish after the evidence is sufficient. If the first turn
+does not produce a valid native call, the Agent reports a missing tool call instead of accepting an
+unsupported free-form conclusion. Other architectures keep the bounded JSON prompt fallback. If a
+model still emits a reasoning wrapper, the app extracts only a strictly validated tool object and
+removes complete or truncated reasoning from the visible answer.
  Open **工具集** first to compose a scenario from the Network diagnostics, Device exploration, Log analysis, Performance observation, Model catalog, Web search and Script execution groups. The choice is stored locally and only selected tools are described to the model or accepted by the registry. Choose a loaded model, review the task and press **开始诊断**; merely opening the workspace never starts inference or a network observation. Agent turns use a separate transcript from ordinary chat. The agent page keeps the injected tool list and prompt preview visible, with raw JSON expandable only when inspecting details. The existing chat screen also retains an opt-in **Network analysis** switch. It is a bounded foreground workflow,
 not a general Android agent: the already-loaded `bmoe-cli --session` remains the only inference
 owner, so the model and MoE expert cache remain warm across its model → tool → model turns. The app
