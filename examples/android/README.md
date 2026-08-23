@@ -21,7 +21,14 @@ engine CSVs and report together, especially when thermal readings are unavailabl
 differs.
 
 
-The Agent uses a short non-reasoning generation budget for control turns and has a three-minute foreground deadline. If a model still emits a reasoning wrapper, the app extracts only a strictly validated tool object and removes complete or truncated reasoning from the visible answer.
+The Agent has a free-form per-model-turn output-token budget (default 256). The native session clamps
+that request after tokenizing the rendered prompt, so a large value is safe: it uses only the context
+room that remains after the prompt. GPT-OSS models use their native Harmony message/template path: the
+saved Agent message is a developer instruction, the console exposes Harmony reasoning effort (`low`,
+`medium`, `high`), enabled tools are passed as function schemas, and tool results return as structured
+tool messages. Other architectures keep the bounded JSON prompt fallback. If a model still emits a
+reasoning wrapper, the app extracts only a strictly validated tool object and removes complete or
+truncated reasoning from the visible answer.
  Open **工具集** first to compose a scenario from the Network diagnostics, Device exploration, Log analysis, Performance observation, Model catalog, Web search and Script execution groups. The choice is stored locally and only selected tools are described to the model or accepted by the registry. Choose a loaded model, review the task and press **开始诊断**; merely opening the workspace never starts inference or a network observation. Agent turns use a separate transcript from ordinary chat. The agent page keeps the injected tool list and prompt preview visible, with raw JSON expandable only when inspecting details. The existing chat screen also retains an opt-in **Network analysis** switch. It is a bounded foreground workflow,
 not a general Android agent: the already-loaded `bmoe-cli --session` remains the only inference
 owner, so the model and MoE expert cache remain warm across its model → tool → model turns. The app
@@ -76,7 +83,13 @@ ledger instead of repeatedly injecting raw search or file output.
 
 Open **社区** on the home screen for the Chinese **ModelScope** discovery page. It fetches public model metadata in a bounded request, shows rank/download/like/update fields when supplied by the source, and links back to the community page. Results are discovery data rather than invented benchmark claims; download and install still require an explicit action in **Get a model**.
 
-The Agent workspace keeps a live **观测** panel visible while the model works: it reports whether the engine is loading, prefilling or generating, the number of tool calls, current token progress and available I/O/cache/temperature signals. Long raw tool JSON is constrained to a scrollable region, while the model still receives the complete structured result. The final diagnosis is prompted to distinguish facts, likely causes, confidence and safe next steps.
+The Agent workspace keeps a live **观测** panel visible while the model works: it reports a staged
+timeline for preparation, model turns, tool calls, context compaction and finalization, plus the
+latest 512 per-token samples. Each sample includes token text, timing decomposition, flash/cache
+signals and the requested/effective output budget. Older samples are counted and dropped from the
+UI only; the model output budget is not limited to 512. Long raw tool JSON is constrained to a
+scrollable region, while the model still receives the complete structured result. The final diagnosis
+is prompted to distinguish facts, likely causes, confidence and safe next steps.
 The app validates tool JSON and only exposes explicitly enabled tool groups. Tool responses have a compact Chinese summary for the UI while the complete JSON remains expandable and is still passed to the model. It rejects private, loopback,
 link-local, multicast, reserved and unspecified destinations; pins each HTTPS TCP connection to
 its validated address (preventing DNS rebinding); disables redirects; and bounds DNS, time, ping,
@@ -97,15 +110,19 @@ Each diagnosis also writes a bounded local JSONL audit under the app's external-
 It records the build, model name, request, tool arguments/results and timings, terminal status and
 final answer; pasted log text is never copied into the audit (only its byte count is recorded).
 The newest 20 files are retained. No root, adb or storage permission is needed to export them:
-open **Metrics**, then use the **Share** action on the Agent logs row to send all retained logs to
-Mail, Files or Drive through Android's one-shot `content://` grant. **Delete all** removes them.
+open **Metrics**, select the Agent log rows to share, then use **Share selected** to send only those
+files to Mail, Files or Drive through Android's one-shot `content://` grant. **Select all** is
+available when the full retained set is needed, and **Delete all** removes them.
+Inference traces use the same per-file selection controls, so ordinary-chat and Agent generation
+traces can be shared independently.
 
 The Metrics screen also has **Export and share** for a single diagnostic ZIP. It contains the newest
-20 Agent JSONL files and newest 20 performance CSV files, plus `manifest.json` with app version,
+20 Agent JSONL files, newest 30 inference traces and newest 20 performance CSV files, plus `manifest.json` with app version,
 versionCode and build SHA. Input is capped at 12 MiB and the resulting archive at 10 MiB; only the
 newest three archives are retained. CSV model paths are reduced to basenames, and local filesystem
 paths in Agent JSONL are omitted. The manifest contains no device identifiers or absolute paths, and
-the archive never includes model files or pasted log source text. Requests and network metadata
+the archive never includes model files. Inference traces contain the actual prompts/messages, model
+answers, reasoning, tool calls and per-turn metrics; review them before sharing. Requests and network metadata
 from the Agent audit may be included; when a pasted log was supplied, the final answer is omitted
 from its audit to prevent a partial log echo. Review the archive before sending it. If storage or
 the share panel fails,

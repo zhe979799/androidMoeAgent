@@ -40,6 +40,9 @@ class RunService : Service() {
     @Volatile private var wake: PowerManager.WakeLock? = null
 
     @Volatile private var sessionSig: String? = null
+    @Volatile private var sessionModel: String = ""
+    @Volatile private var activeInferenceLog: InferenceLog? = null
+    @Volatile private var activeStructuredPrompt: String? = null
     @Volatile private var shuttingDown = false
     // Bumped every time a new session process is (re)started. The runSession thread carries the
     // epoch it was launched with and only touches shared state (proc, RunBus, foreground) while it
@@ -65,6 +68,10 @@ class RunService : Service() {
 
     private data class Req(
         val prompt: String,
+        val messagesJson: String?,
+        val toolsJson: String?,
+        val toolChoice: String,
+        val chatTemplateKwargsJson: String?,
         val nPredict: Int,
         val think: Boolean,
         val clearKv: Boolean,
@@ -119,6 +126,7 @@ class RunService : Service() {
         shuttingDown = false
         pending = req?.copy(clearKv = true)
         sessionSig = sig
+        sessionModel = File(model).name
         main.removeCallbacks(idleUnload)
         main.removeCallbacks(forceKill)
 
@@ -137,8 +145,8 @@ class RunService : Service() {
             // thinkControl is a property of the model being loaded, so it goes the same way — the
             // incoming session reports its own at BMOE_READY.
             it.copy(state = EngineState.LOADING, error = null, sessionSig = sig, answer = "", summary = "",
-                transcript = emptyList(), streaming = streaming, ioMode = null, thinkControl = null,
-                generationId = it.generationId, lastCompletedText = "")
+                transcript = emptyList(), streaming = streaming, ioMode = null, arch = null, thinkControl = null,
+                generationId = it.generationId, lastCompletedText = "", lastCompletedToolCalls = "[]")
         }
 
         thread(name = "bmoe-session") { runSession(argv, model, myEpoch, dying) }
@@ -227,7 +235,8 @@ class RunService : Service() {
             t.startsWith("BMOE_READY ") -> {
                 val ctl = Regex(""""think_ctl":"([a-z_]+)"""").find(t)?.groupValues?.get(1)
                 val topk = Regex(""""n_expert_used":(\d+)""").find(t)?.groupValues?.get(1)?.toIntOrNull()
-                RunBus.update { it.copy(state = EngineState.READY, thinkControl = ctl, nExpertUsed = topk) }
+                val arch = Regex(""""arch":"([^\"]*)"""").find(t)?.groupValues?.get(1)
+                RunBus.update { it.copy(state = EngineState.READY, arch = arch, thinkControl = ctl, nExpertUsed = topk) }
                 main.post { notify("Model ready") }
                 pending?.let { p -> pending = null; sendGenerate(p) } ?: scheduleIdleUnload()
             }
@@ -239,6 +248,7 @@ class RunService : Service() {
                     it.copy(state = EngineState.GENERATING, telemetry = telemetry.current.copy(),
                         answer = "", reasoning = "", summary = "", error = null)
                 }
+                RunBus.updateLatestActiveAgentStage("预填充中…")
                 main.post { notify("Generating…") }
             }
             telemetry.onLine(t) -> {
@@ -246,6 +256,30 @@ class RunService : Service() {
                 RunBus.update {
                     it.copy(telemetry = telemetry.current.copy(), answer = telemetry.current.text,
                         reasoning = telemetry.current.reasoning)
+                }
+                val sample = telemetry.latestToken
+                if (sample != null && RunBus.state.value.agentActive && activeReqSuppressTranscript) {
+                    RunBus.appendAgentToken(
+                        AgentTokenSample(
+                            ordinal = RunBus.state.value.agentTokensSeen + 1,
+                            generation = sample.generation,
+                            step = sample.step,
+                            steps = sample.steps,
+                            text = sample.text,
+                            reasoning = sample.reasoning,
+                            wallMs = sample.wallMs,
+                            computeMs = sample.computeMs,
+                            ioMs = sample.ioMs,
+                            stallMs = sample.stallMs,
+                            mgmtMs = sample.mgmtMs,
+                            readMiB = sample.readMiB,
+                            cacheHitPct = sample.cacheHitPct,
+                            majflt = sample.majflt,
+                            cpuMs = sample.cpuMs,
+                            denseResidentFrac = sample.denseResidentFrac,
+                        ),
+                        stageDetail = if (sample.step > 0) "生成中 · ${sample.step}/${sample.steps} token" else "预填充中…",
+                    )
                 }
             }
             t.startsWith("BMOE_DONE ") -> onDone(t.removePrefix("BMOE_DONE "))
@@ -260,6 +294,8 @@ class RunService : Service() {
         runCatching {
             val o = JSONObject(json)
             val tokens = o.optInt("tokens")
+            val requestedTokens = o.optInt("n_predict_requested", -1)
+            val effectiveTokens = o.optInt("n_predict_effective", -1)
             val tokS = o.optDouble("tok_s")
             val hit = o.optDouble("cache_hit_pct", -1.0)
             val prefill = o.optDouble("prefill_s")
@@ -292,9 +328,18 @@ class RunService : Service() {
             val cancelled = o.optBoolean("cancelled")
             val text = o.optString("text")
             val reasoning = o.optString("reasoning")
+            val renderedPrompt = o.optString("rendered_prompt")
+            val toolCalls = o.optJSONArray("tool_calls")?.toString() ?: "[]"
+            val trace = activeInferenceLog
+            activeInferenceLog = null
+            val expectedStructuredPrompt = activeStructuredPrompt
+            activeStructuredPrompt = null
             val loc = java.util.Locale.US
             val summary = buildString {
                 append(String.format(loc, "generation: %d tokens (%.2f tok/s)", tokens, tokS))
+                if (requestedTokens > 0 && effectiveTokens > 0) {
+                    append(String.format(loc, " | budget %d→%d", requestedTokens, effectiveTokens))
+                }
                 if (prefill > 0) {
                     append(String.format(loc, " | prefill %.2fs", prefill))
                     if (prefillTps > 0) append(String.format(loc, " (%.1f tok/s)", prefillTps))
@@ -345,6 +390,26 @@ class RunService : Service() {
                 draftedSteps = draftedSteps,
                 mtpDraftSPerTok = mtpDraftSTok, loopOverheadSPerTok = loopOverheadSTok,
             )
+            if (RunBus.state.value.agentActive && activeReqSuppressTranscript) {
+                if (requestedTokens > 0 && effectiveTokens > 0) {
+                    RunBus.updateAgentBudget(nPrompt.coerceAtLeast(0), effectiveTokens, nPast.coerceAtLeast(0))
+                }
+                RunBus.updateLatestActiveAgentStage(
+                    "完成 · ${tokens} token",
+                    RunBus.state.value.agentTokensSeen,
+                )
+            }
+            val renderedMismatch = expectedStructuredPrompt?.takeIf { it.isNotBlank() }?.let {
+                renderedPrompt.isBlank() || !renderedPrompt.contains(it)
+            } == true
+            if (renderedMismatch) {
+                val error = "Structured prompt was not rendered into the model input; generation was discarded."
+                trace?.finish("structured_prompt_mismatch", text, reasoning, renderedPrompt, toolCalls, summary, o.toString(), error)
+                RunBus.update { it.copy(state = EngineState.READY, telemetry = tel, answer = "", reasoning = "",
+                    summary = summary, error = error, generationId = it.generationId + 1,
+                    lastCompletedText = "", lastCompletedToolCalls = "[]", clearKvOnNextPrompt = true) }
+                return@runCatching
+            }
             RunBus.update {
                 val answer = if (text.isNotEmpty()) text else it.answer
                 // The final BMOE_DONE reasoning may be empty (some models drop it from the summary);
@@ -357,9 +422,21 @@ class RunService : Service() {
                     else it.transcript
                 it.copy(state = EngineState.READY, telemetry = tel, answer = "", reasoning = "",
                     summary = summary, transcript = transcript, generationId = it.generationId + 1,
-                    lastCompletedText = answer)
+                    lastCompletedText = answer, lastCompletedToolCalls = toolCalls)
             }
+            trace?.finish(
+                if (cancelled) "cancelled" else "complete",
+                if (text.isNotEmpty()) text else telemetry.current.text,
+                if (reasoning.isNotEmpty()) reasoning else telemetry.current.reasoning,
+                renderedPrompt,
+                toolCalls,
+                summary,
+                o.toString(),
+            )
         }.onFailure { e ->
+            val trace = activeInferenceLog
+            activeInferenceLog = null
+            trace?.finish("summary_error", telemetry.current.text, telemetry.current.reasoning, "", "[]", "", json, e.message ?: e.toString())
             // Commit whatever was streamed so the answer is not lost, say what happened, and go
             // back to READY. Anything else strands the session in a state only a restart clears.
             RunBus.update {
@@ -368,7 +445,7 @@ class RunService : Service() {
                         it.transcript + ChatTurn("assistant", it.answer, "", it.reasoning)
                     else it.transcript
                 it.copy(state = EngineState.READY, answer = "", reasoning = "", transcript = transcript,
-                    generationId = it.generationId + 1, lastCompletedText = it.answer,
+                    generationId = it.generationId + 1, lastCompletedText = it.answer, lastCompletedToolCalls = "[]",
                     error = "The engine's end-of-turn summary could not be read (${e.message}). " +
                         "The answer above is what streamed before it.")
             }
@@ -435,6 +512,8 @@ class RunService : Service() {
     private fun onError(json: String) {
         val fatal = runCatching { JSONObject(json).optBoolean("fatal", true) }.getOrDefault(true)
         val msg = runCatching { JSONObject(json).optString("msg") }.getOrDefault("engine error")
+        activeInferenceLog?.finish("engine_error", "", "", "", "[]", "", json, msg)
+        activeInferenceLog = null
         releaseWake()
         if (fatal) {
             RunBus.update { it.copy(state = EngineState.ERROR, error = msg) }
@@ -451,6 +530,10 @@ class RunService : Service() {
 
     private fun reqFrom(intent: Intent): Req = Req(
         prompt = intent.getStringExtra(EXTRA_PROMPT) ?: "",
+        messagesJson = intent.getStringExtra(EXTRA_MESSAGES),
+        toolsJson = intent.getStringExtra(EXTRA_TOOLS),
+        toolChoice = intent.getStringExtra(EXTRA_TOOL_CHOICE) ?: "auto",
+        chatTemplateKwargsJson = intent.getStringExtra(EXTRA_CHAT_TEMPLATE_KWARGS),
         nPredict = intent.getIntExtra(EXTRA_NPREDICT, AppSettings.DEFAULT_N_PREDICT),
         think = intent.getBooleanExtra(EXTRA_THINK, false),
         clearKv = intent.getBooleanExtra(EXTRA_CLEAR_KV, true),
@@ -465,6 +548,23 @@ class RunService : Service() {
     private fun sendGenerate(req: Req) {
         val id = nextId++
         activeReqSuppressTranscript = req.suppressTranscript
+        activeStructuredPrompt = req.messagesJson?.takeIf { it.isNotBlank() }?.let {
+            req.displayPrompt ?: req.prompt
+        }
+        activeInferenceLog?.finish("superseded", "", "", "", "[]", "", "", "request replaced")
+        activeInferenceLog = InferenceLog.start(
+            this,
+            sessionModel,
+            req.prompt,
+            req.messagesJson,
+            req.toolsJson,
+            req.chatTemplateKwargsJson,
+            req.nPredict,
+            req.think,
+            req.clearKv,
+            req.displayPrompt,
+            req.suppressTranscript,
+        )
         // Show a user turn only when this is a visible chat request. Agent control prompts and tool
         // follow-ups use the same persistent process but must never masquerade as user text.
         RunBus.update {
@@ -482,7 +582,12 @@ class RunService : Service() {
             append(""","n_predict":""").append(req.nPredict)
             append(""","think":""").append(req.think)
             append(""","clear_kv":""").append(req.clearKv)
-            append(""","prompt":"""").append(jsonEscape(req.prompt)).append("\"}")
+            append(""","prompt":"""").append(jsonEscape(req.prompt)).append("\"")
+            req.messagesJson?.takeIf { it.isNotBlank() }?.let { append(",\"messages\":").append(it) }
+            req.toolsJson?.takeIf { it.isNotBlank() }?.let { append(",\"tools\":").append(it) }
+            if (req.toolChoice.isNotBlank()) append(""","tool_choice":"""").append(jsonEscape(req.toolChoice)).append("\"")
+            req.chatTemplateKwargsJson?.takeIf { it.isNotBlank() }?.let { append(",\"chat_template_kwargs\":").append(it) }
+            append("}")
         }
         if (!send(json)) fail("session not ready")
     }
@@ -624,6 +729,10 @@ class RunService : Service() {
         const val EXTRA_ARGV = "argv"
         const val EXTRA_SIG = "sig"
         const val EXTRA_PROMPT = "prompt"
+        const val EXTRA_MESSAGES = "messages"
+        const val EXTRA_TOOLS = "tools"
+        const val EXTRA_TOOL_CHOICE = "tool_choice"
+        const val EXTRA_CHAT_TEMPLATE_KWARGS = "chat_template_kwargs"
         const val EXTRA_NPREDICT = "n_predict"
         const val EXTRA_THINK = "think"
         const val EXTRA_CLEAR_KV = "clear_kv"

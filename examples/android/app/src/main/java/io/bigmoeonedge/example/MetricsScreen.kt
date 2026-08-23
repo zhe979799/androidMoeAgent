@@ -54,6 +54,8 @@ fun MetricsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var picked by remember { mutableStateOf<File?>(null) }
     var selection by remember { mutableStateOf<List<File>>(emptyList()) }
+    var agentSelection by remember { mutableStateOf<List<File>>(emptyList()) }
+    var inferenceSelection by remember { mutableStateOf<List<File>>(emptyList()) }
     var view by remember { mutableStateOf(View.LIST) }
     var refresh by remember { mutableStateOf(0) }
     var bundleError by remember { mutableStateOf<String?>(null) }
@@ -66,6 +68,13 @@ fun MetricsScreen(onBack: () -> Unit) {
             ?: emptyList()
     }
     val agentLogs = remember(refresh) { AgentLog.files(context) }
+    val inferenceLogs = remember(refresh) { InferenceLog.files(context) }
+    LaunchedEffect(agentLogs) {
+        agentSelection = agentSelection.filter { agentLogs.contains(it) }
+    }
+    LaunchedEffect(inferenceLogs) {
+        inferenceSelection = inferenceSelection.filter { inferenceLogs.contains(it) }
+    }
 
     // Back always steps one level toward the list, then out of the screen.
     fun back() {
@@ -131,6 +140,7 @@ fun MetricsScreen(onBack: () -> Unit) {
             View.LIST -> FileList(
                 files = files,
                 agentLogs = agentLogs,
+                inferenceLogs = inferenceLogs,
                 selection = selection,
                 modifier = m,
                 onPick = { picked = it; view = View.FILE },
@@ -142,8 +152,22 @@ fun MetricsScreen(onBack: () -> Unit) {
                     }
                 },
                 onDelete = { f -> f.delete(); selection = selection - f; refresh++ },
-                onShareAgentLogs = { shareAgentLogs(context, agentLogs) },
-                onDeleteAgentLogs = { agentLogs.forEach { it.delete() }; refresh++ },
+                selectedAgentLogs = agentSelection,
+                onToggleAgentLog = { f ->
+                    agentSelection = toggleSelectedFile(agentSelection, f)
+                },
+                onSelectAllAgentLogs = { agentSelection = agentLogs },
+                onClearAgentLogSelection = { agentSelection = emptyList() },
+                onShareAgentLogs = { filesToShare -> shareAgentLogs(context, filesToShare) },
+                onDeleteAgentLogs = { agentLogs.forEach { it.delete() }; agentSelection = emptyList(); refresh++ },
+                selectedInferenceLogs = inferenceSelection,
+                onToggleInferenceLog = { f ->
+                    inferenceSelection = toggleSelectedFile(inferenceSelection, f)
+                },
+                onSelectAllInferenceLogs = { inferenceSelection = inferenceLogs },
+                onClearInferenceLogSelection = { inferenceSelection = emptyList() },
+                onShareInferenceLogs = { filesToShare -> shareInferenceLogs(context, filesToShare) },
+                onDeleteInferenceLogs = { inferenceLogs.forEach { it.delete() }; inferenceSelection = emptyList(); refresh++ },
                 onExportBundle = {
                     scope.launch {
                         if (bundleBusy) return@launch
@@ -183,18 +207,29 @@ fun MetricsScreen(onBack: () -> Unit) {
 private fun FileList(
     files: List<File>,
     agentLogs: List<File>,
+    inferenceLogs: List<File>,
     selection: List<File>,
+    selectedAgentLogs: List<File>,
+    selectedInferenceLogs: List<File>,
     modifier: Modifier,
     onPick: (File) -> Unit,
     onToggle: (File) -> Unit,
     onDelete: (File) -> Unit,
-    onShareAgentLogs: () -> Unit,
+    onToggleAgentLog: (File) -> Unit,
+    onSelectAllAgentLogs: () -> Unit,
+    onClearAgentLogSelection: () -> Unit,
+    onShareAgentLogs: (List<File>) -> Unit,
     onDeleteAgentLogs: () -> Unit,
+    onToggleInferenceLog: (File) -> Unit,
+    onSelectAllInferenceLogs: () -> Unit,
+    onClearInferenceLogSelection: () -> Unit,
+    onShareInferenceLogs: (List<File>) -> Unit,
+    onDeleteInferenceLogs: () -> Unit,
     onExportBundle: () -> Unit,
     bundleBusy: Boolean,
     bundleError: String?,
 ) {
-    val noDiagnostics = files.isEmpty() && agentLogs.isEmpty()
+    val noDiagnostics = files.isEmpty() && agentLogs.isEmpty() && inferenceLogs.isEmpty()
     val stamp = SimpleDateFormat("d MMM HH:mm:ss", Locale.getDefault())
     // A run's identity, not its filename: the model's initial and each turn's tok/s, read from the
     // preamble and summaries. Computed once per file list — the files are small and few.
@@ -220,7 +255,7 @@ private fun FileList(
                 Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("No diagnostics yet.", fontWeight = FontWeight.Medium)
                     Text(
-                        "Turn on Settings → Diagnostics → Metrics CSV, then run a prompt. Network analysis also saves an agent log automatically.",
+                        "Turn on Settings → Diagnostics → Metrics CSV, then run a prompt. Inference traces and Agent logs are saved automatically.",
                         fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -229,15 +264,102 @@ private fun FileList(
         if (agentLogs.isNotEmpty()) {
             item {
                 ListItem(
-                    headlineContent = { Text("${agentLogs.size} agent logs", fontWeight = FontWeight.Medium) },
+                    headlineContent = {
+                        Text(
+                            "${agentLogs.size} agent logs" +
+                                if (selectedAgentLogs.isNotEmpty()) " · ${selectedAgentLogs.size} selected" else "",
+                            fontWeight = FontWeight.Medium,
+                        )
+                    },
                     supportingContent = {
                         Column {
                             Text("Auto-saved locally; pasted log text is omitted. Share through Mail, Files or Drive.", fontSize = 11.sp)
-                            Row {
-                                TextButton(onClick = onShareAgentLogs) { Text("Share") }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(
+                                    onClick = onSelectAllAgentLogs,
+                                    enabled = selectedAgentLogs.size != agentLogs.size,
+                                ) { Text("Select all") }
+                                TextButton(
+                                    onClick = onClearAgentLogSelection,
+                                    enabled = selectedAgentLogs.isNotEmpty(),
+                                ) { Text("Clear") }
+                                TextButton(
+                                    onClick = { onShareAgentLogs(selectedAgentLogs) },
+                                    enabled = selectedAgentLogs.isNotEmpty(),
+                                ) { Text("Share selected") }
                                 TextButton(onClick = onDeleteAgentLogs) { Text("Delete all") }
                             }
                         }
+                    },
+                )
+                HorizontalDivider()
+            }
+            items(agentLogs, key = { it.absolutePath }) { file ->
+                ListItem(
+                    leadingContent = {
+                        Checkbox(
+                            checked = selectedAgentLogs.contains(file),
+                            onCheckedChange = { onToggleAgentLog(file) },
+                        )
+                    },
+                    headlineContent = { Text(file.name, fontWeight = FontWeight.Medium, fontSize = 14.sp) },
+                    supportingContent = {
+                        Text(
+                            "${stamp.format(Date(file.lastModified()))} · ${file.length() / 1024} KiB",
+                            fontSize = 11.sp,
+                        )
+                    },
+                )
+                HorizontalDivider()
+            }
+        }
+        if (inferenceLogs.isNotEmpty()) {
+            item {
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            "${inferenceLogs.size} inference traces" +
+                                if (selectedInferenceLogs.isNotEmpty()) " · ${selectedInferenceLogs.size} selected" else "",
+                            fontWeight = FontWeight.Medium,
+                        )
+                    },
+                    supportingContent = {
+                        Column {
+                            Text("Contains actual prompts/messages, model answers, reasoning, tool calls and per-turn metrics. Review before sharing.", fontSize = 11.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(
+                                    onClick = onSelectAllInferenceLogs,
+                                    enabled = selectedInferenceLogs.size != inferenceLogs.size,
+                                ) { Text("Select all") }
+                                TextButton(
+                                    onClick = onClearInferenceLogSelection,
+                                    enabled = selectedInferenceLogs.isNotEmpty(),
+                                ) { Text("Clear") }
+                                TextButton(
+                                    onClick = { onShareInferenceLogs(selectedInferenceLogs) },
+                                    enabled = selectedInferenceLogs.isNotEmpty(),
+                                ) { Text("Share selected") }
+                                TextButton(onClick = onDeleteInferenceLogs) { Text("Delete all") }
+                            }
+                        }
+                    },
+                )
+                HorizontalDivider()
+            }
+            items(inferenceLogs, key = { it.absolutePath }) { file ->
+                ListItem(
+                    leadingContent = {
+                        Checkbox(
+                            checked = selectedInferenceLogs.contains(file),
+                            onCheckedChange = { onToggleInferenceLog(file) },
+                        )
+                    },
+                    headlineContent = { Text(file.name, fontWeight = FontWeight.Medium, fontSize = 14.sp) },
+                    supportingContent = {
+                        Text(
+                            "${stamp.format(Date(file.lastModified()))} · ${file.length() / 1024} KiB",
+                            fontSize = 11.sp,
+                        )
                     },
                 )
                 HorizontalDivider()

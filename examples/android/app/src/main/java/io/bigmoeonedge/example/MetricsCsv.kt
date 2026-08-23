@@ -141,15 +141,19 @@ internal fun pearson(a: List<Float?>, b: List<Float?>): Float? {
 /** Hand the files to another app as content:// URIs (see the FileProvider in the manifest). */
 private fun shareFiles(context: Context, files: List<File>, mimeType: String, title: String) {
     if (files.isEmpty()) return
-    val uris = ArrayList(files.map {
-        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it)
-    })
-    val intent = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
-        type = mimeType
-        if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris[0]) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    runCatching {
+        val uris = ArrayList(files.map {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it)
+        })
+        val intent = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
+            type = mimeType
+            if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris[0]) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.onFailure { error ->
+        android.util.Log.e("MetricsShare", "Could not share diagnostic files", error)
     }
-    runCatching { context.startActivity(Intent.createChooser(intent, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }
 
 internal fun shareCsv(context: Context, files: List<File>) =
@@ -157,3 +161,9 @@ internal fun shareCsv(context: Context, files: List<File>) =
 
 internal fun shareAgentLogs(context: Context, files: List<File>) =
     shareFiles(context, files, "application/json", "Share agent logs")
+
+internal fun shareInferenceLogs(context: Context, files: List<File>) =
+    shareFiles(context, files, "application/json", "Share inference traces")
+
+internal fun toggleSelectedFile(selection: List<File>, file: File): List<File> =
+    if (selection.contains(file)) selection - file else selection + file

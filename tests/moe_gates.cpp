@@ -231,6 +231,21 @@ int main(int argc, char ** argv) {
         return 2;
     }
 
+    // Context budgeting: an oversized request is accepted and bounded after exact prompt
+    // tokenization, rather than rejected merely because the caller asked for a large number.
+    RunConfig oversized = base(model);
+    oversized.n_predict = 10'000;
+    RunResult bounded = run(oversized);
+    if (!bounded || bounded.summary.n_predict_requested != oversized.n_predict ||
+        bounded.summary.n_predict_effective <= 0 ||
+        bounded.summary.n_predict_effective >= bounded.summary.n_predict_requested ||
+        bounded.summary.n_generated > bounded.summary.n_predict_effective) {
+        std::fprintf(stderr, "context budget clamp failed (ok=%d requested=%d effective=%d generated=%d)\n",
+                     (int) bounded.ok, bounded.summary.n_predict_requested, bounded.summary.n_predict_effective,
+                     bounded.summary.n_generated);
+        return 2;
+    }
+
     int fails = 0;
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
     fails += check("G2 streaming(cache off) == streaming(LRU cache)", s_s0, s_sc);
@@ -241,6 +256,8 @@ int main(int argc, char ** argv) {
     fails += check("G6 dense-odirect(rebind) == resident", s_res, s_dod);
     // G7: the rebind is byte-identical whether or not the dense read bypassed the page cache.
     fails += check("G7 dense=anon + expert O_DIRECT off == resident", s_res, s_dodb);
+    std::printf("[PASS] context budget clamps %d to %d tokens\n", bounded.summary.n_predict_requested,
+                bounded.summary.n_predict_effective);
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // overlap, cache off

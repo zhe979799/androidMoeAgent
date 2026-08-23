@@ -83,6 +83,17 @@ const char * think_control_name(ThinkControl c);
 // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
 struct GenerateRequest {
     std::string prompt;
+    // Optional OpenAI-compatible message array. When present, the chat template receives these
+    // structured roles instead of the legacy single user prompt. The string stays in the public
+    // policy layer so core does not expose llama.cpp or a JSON dependency to callers.
+    std::string messages_json;
+    // Optional OpenAI-compatible function-tool definitions. The model-bound chat template decides
+    // how these become Harmony/tool tokens; an empty value keeps the legacy prompt-only path.
+    std::string tools_json;
+    std::string tool_choice = "auto";
+    // Arbitrary model-template keyword arguments, encoded as a JSON object. GPT-OSS uses
+    // reasoning_effort here; other templates may ignore keys they do not understand.
+    std::string chat_template_kwargs_json;
     int n_predict = 32;
     bool think = true;
     bool clear_kv = true;
@@ -120,7 +131,7 @@ public:
     // Generate one response. Serialized: one generation at a time per session. `on_token`
     // and `sink` receive the same per-token metrics as run(). Cache state carries over from
     // the previous call. If cancel() fired, returns ok=true with cancelled=true.
-    RunResult generate(const GenerateRequest & req,
+    RunResult generate(GenerateRequest req,
                        const std::function<void(const TokenMetrics &)> & on_token = nullptr,
                        IMetricsSink * sink = nullptr);
 

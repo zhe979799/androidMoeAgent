@@ -19,6 +19,7 @@
 #include "chat.h"
 #include "common.h"
 #include "speculative.h"
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -28,6 +29,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -834,7 +836,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     return self;
 }
 
-RunResult Session::generate(const GenerateRequest & req,
+RunResult Session::generate(GenerateRequest req,
                             const std::function<void(const TokenMetrics &)> & on_token,
                             IMetricsSink * sink) {
     Impl & im = *impl_;
@@ -858,6 +860,8 @@ RunResult Session::generate(const GenerateRequest & req,
         return res;
     };
 
+    const std::vector<common_chat_msg> history_before_turn = req.clear_kv ? std::vector<common_chat_msg>{} : im.chat_history;
+
     // clear_kv = "new chat": drop the KV and the engine-held conversation. Otherwise this turn
     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
     if (req.clear_kv) {
@@ -878,22 +882,53 @@ RunResult Session::generate(const GenerateRequest & req,
     // reasoning is stripped from the shown answer. req.think drives enable_thinking, per prompt.
     std::string prompt = req.prompt;
     bool chat_on = im.chat_on;
+    const bool structured_request = !req.messages_json.empty();
+    if (structured_request && !chat_on) return fail("structured messages require chat template mode");
     bool history_pushed = false;   // did we append this turn's user message to chat_history?
+    bool history_replaced = false; // did a structured caller provide the complete message array?
     bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
     if (chat_on) {
         try {
-            common_chat_msg user_msg;
-            user_msg.role = "user";
-            user_msg.content = req.prompt;
-            im.chat_history.push_back(user_msg);
-            history_pushed = true;
+            if (!req.messages_json.empty()) {
+                const auto messages = nlohmann::ordered_json::parse(req.messages_json);
+                if (!messages.is_array() || messages.empty()) {
+                    throw std::runtime_error("messages must be a non-empty JSON array");
+                }
+                im.chat_history = common_chat_msgs_parse_oaicompat(messages);
+                if (im.chat_history.empty()) {
+                    throw std::runtime_error("messages contained no supported chat entries");
+                }
+                const bool has_user_content = std::any_of(im.chat_history.begin(), im.chat_history.end(), [](const common_chat_msg & msg) {
+                    return msg.role == "user" && (!msg.content.empty() || !msg.content_parts.empty());
+                });
+                if (!has_user_content) throw std::runtime_error("messages must contain a non-empty user message");
+                history_replaced = true;
+            } else {
+                common_chat_msg user_msg;
+                user_msg.role = "user";
+                user_msg.content = req.prompt;
+                im.chat_history.push_back(user_msg);
+                history_pushed = true;
+            }
 
             common_chat_templates_inputs inputs;
             inputs.messages = im.chat_history; // the full conversation, not just this turn
             inputs.add_generation_prompt = true;
             inputs.use_jinja = true;
             inputs.enable_thinking = req.think;
+            if (!req.tools_json.empty()) {
+                const auto tools = nlohmann::ordered_json::parse(req.tools_json);
+                if (!tools.is_array()) throw std::runtime_error("tools must be a JSON array");
+                inputs.tools = common_chat_tools_parse_oaicompat(tools);
+                inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(
+                    req.tool_choice.empty() ? "auto" : req.tool_choice);
+            }
+            if (!req.chat_template_kwargs_json.empty()) {
+                const auto kwargs = nlohmann::ordered_json::parse(req.chat_template_kwargs_json);
+                if (!kwargs.is_object()) throw std::runtime_error("chat_template_kwargs must be a JSON object");
+                for (const auto & item : kwargs.items()) inputs.chat_template_kwargs[item.key()] = item.value().dump();
+            }
             // AUTO is what bakes reasoning-stripping into the generated parser grammar. It is set
             // here, before apply — the field defaults to NONE, which produces a content-only
             // grammar that leaves <think> markers in the answer no matter how the parse is wired.
@@ -921,11 +956,17 @@ RunResult Session::generate(const GenerateRequest & req,
                 im.chat_history.pop_back();
                 history_pushed = false;
             }
+            if (history_replaced) {
+                im.chat_history = history_before_turn;
+                history_replaced = false;
+            }
+            if (structured_request) return fail(std::string("structured chat request failed: ") + e.what());
             chat_on = false;
         }
     }
 
     std::vector<llama_token> tokens(prompt.size() + 8);
+    res.rendered_prompt = prompt;
     int n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
                                   /*add_special*/ true, /*parse_special*/ true);
     if (n_prompt < 0) {
@@ -935,9 +976,13 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     if (n_prompt < 1) return fail("empty prompt after tokenization");
     tokens.resize(n_prompt);
-    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx)
-        return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
-                    "); open the session with a larger n_ctx");
+    if (req.n_predict <= 0) return fail("n_predict must be positive");
+    const int context_room = im.cfg.n_ctx - n_prompt - 8;
+    if (context_room <= 0)
+        return fail("prompt leaves no room for generated tokens in the session n_ctx (" +
+                    std::to_string(im.cfg.n_ctx) + ")");
+    const int requested_n_predict = req.n_predict;
+    req.n_predict = std::min(requested_n_predict, context_room);
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
     // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to
@@ -1002,6 +1047,10 @@ RunResult Session::generate(const GenerateRequest & req,
             if (history_pushed) {
                 im.chat_history.pop_back();
                 history_pushed = false;
+            }
+            if (history_replaced) {
+                im.chat_history = history_before_turn;
+                history_replaced = false;
             }
         } else {
             llama_memory_clear(llama_get_memory(ctx), true);
@@ -1420,6 +1469,8 @@ RunResult Session::generate(const GenerateRequest & req,
     // ── summary ──
     RunSummary & s = res.summary;
     s.n_generated = n_gen;
+    s.n_predict_requested = requested_n_predict;
+    s.n_predict_effective = req.n_predict;
     s.gen_seconds = gen_seconds;
     s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
     s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;
@@ -1508,6 +1559,10 @@ RunResult Session::generate(const GenerateRequest & req,
     if (final_parsed) {
         res.generated_text = final_msg.content;
         res.reasoning_text = final_msg.reasoning_content;
+        if (!final_msg.tool_calls.empty()) {
+            const auto encoded = final_msg.to_json_oaicompat();
+            if (encoded.contains("tool_calls")) res.tool_calls_json = encoded.at("tool_calls").dump();
+        }
     } else {
         // Not chat, a prefilled turn (the stream IS the answer), or a parse that threw: the raw
         // generation stands on its own, exactly as shown_view would have reported it.

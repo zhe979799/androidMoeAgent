@@ -930,6 +930,10 @@ internal fun launchPrompt(
     csvPath: String? = null,
     thinkOverride: Boolean? = null,
     nPredictOverride: Int? = null,
+    messagesJson: String? = null,
+    toolsJson: String? = null,
+    toolChoice: String = "auto",
+    chatTemplateKwargsJson: String? = null,
 ) {
     RunBus.resetGeneration()
     val sig = settings.sessionSignature(model.absolutePath)
@@ -941,6 +945,10 @@ internal fun launchPrompt(
                 .putExtra(RunService.EXTRA_NPREDICT, nPredictOverride ?: settings.nPredict)
                 .putExtra(RunService.EXTRA_THINK, thinkOverride ?: settings.thinking)
                 .putExtra(RunService.EXTRA_CLEAR_KV, clearKv)
+                .putExtra(RunService.EXTRA_MESSAGES, messagesJson)
+                .putExtra(RunService.EXTRA_TOOLS, toolsJson)
+                .putExtra(RunService.EXTRA_TOOL_CHOICE, toolChoice)
+                .putExtra(RunService.EXTRA_CHAT_TEMPLATE_KWARGS, chatTemplateKwargsJson)
                 .putExtra(RunService.EXTRA_DISPLAY_PROMPT, displayPrompt)
                 .putExtra(RunService.EXTRA_SUPPRESS_TRANSCRIPT, suppressTranscript)
         )
@@ -961,6 +969,10 @@ internal fun launchPrompt(
                 .putExtra(RunService.EXTRA_NPREDICT, nPredictOverride ?: settings.nPredict)
                 .putExtra(RunService.EXTRA_THINK, thinkOverride ?: settings.thinking)
                 .putExtra(RunService.EXTRA_CLEAR_KV, true)
+                .putExtra(RunService.EXTRA_MESSAGES, messagesJson)
+                .putExtra(RunService.EXTRA_TOOLS, toolsJson)
+                .putExtra(RunService.EXTRA_TOOL_CHOICE, toolChoice)
+                .putExtra(RunService.EXTRA_CHAT_TEMPLATE_KWARGS, chatTemplateKwargsJson)
                 .putExtra(RunService.EXTRA_DISPLAY_PROMPT, displayPrompt)
                 .putExtra(RunService.EXTRA_SUPPRESS_TRANSCRIPT, suppressTranscript)
         )

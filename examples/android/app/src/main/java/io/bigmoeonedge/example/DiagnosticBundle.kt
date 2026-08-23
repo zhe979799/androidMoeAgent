@@ -18,12 +18,13 @@ import java.util.zip.ZipOutputStream
 /** Creates a small, root-free diagnostic archive without ever traversing the model directory. */
 internal object DiagnosticBundle {
     private const val MAX_AGENT_FILES = 20
+    private const val MAX_INFERENCE_FILES = 30
     private const val MAX_CSV_FILES = 20
     private const val MAX_INPUT_BYTES = 12L * 1024 * 1024
     private const val MAX_ARCHIVE_BYTES = 10L * 1024 * 1024
     private const val MAX_BUNDLES = 3
 
-    data class Inputs(val agentLogs: List<File>, val metrics: List<File>)
+    data class Inputs(val agentLogs: List<File>, val inferenceLogs: List<File>, val metrics: List<File>)
 
     fun create(
         outputDir: File,
@@ -34,8 +35,9 @@ internal object DiagnosticBundle {
         nowMs: Long = System.currentTimeMillis(),
     ): File {
         val agents = boundedFiles(inputs.agentLogs, MAX_AGENT_FILES)
+        val inference = boundedFiles(inputs.inferenceLogs, MAX_INFERENCE_FILES)
         val metrics = boundedFiles(inputs.metrics, MAX_CSV_FILES)
-        val totalInput = (agents + metrics).sumOf { it.length() }
+        val totalInput = (agents + inference + metrics).sumOf { it.length() }
         require(totalInput <= MAX_INPUT_BYTES) {
             "Selected diagnostics are too large (${totalInput / (1024 * 1024)} MiB; limit 12 MiB)"
         }
@@ -44,9 +46,10 @@ internal object DiagnosticBundle {
         val partial = File.createTempFile(".bmoe-diagnostics-", ".part", outputDir)
         return runCatching {
             ZipOutputStream(BufferedOutputStream(LimitedOutputStream(FileOutputStream(partial), MAX_ARCHIVE_BYTES))).use { zip ->
-                val manifest = manifestJson(versionName, versionCode, gitSha, agents.size, metrics.size, nowMs)
+                val manifest = manifestJson(versionName, versionCode, gitSha, agents.size, inference.size, metrics.size, nowMs)
                 putBytes(zip, "manifest.json", manifest.toByteArray(StandardCharsets.UTF_8))
                 agents.forEachIndexed { index, file -> putAgentLogFile(zip, "agent-logs/${index + 1}-${safeName(file.name)}", file) }
+                inference.forEachIndexed { index, file -> putInferenceLogFile(zip, "inference-logs/${index + 1}-${safeName(file.name)}", file) }
                 metrics.forEachIndexed { index, file -> putMetricsFile(zip, "metrics/${index + 1}-${safeName(file.name)}", file) }
             }
             check(partial.length() <= MAX_ARCHIVE_BYTES) {
@@ -92,6 +95,7 @@ internal object DiagnosticBundle {
         versionCode: Int,
         gitSha: String,
         agentCount: Int,
+        inferenceCount: Int,
         metricsCount: Int,
         nowMs: Long,
     ): String = """
@@ -102,8 +106,9 @@ internal object DiagnosticBundle {
           "version_code":$versionCode,
           "git_sha":"${jsonEscape(gitSha).take(64)}",
           "agent_log_count":$agentCount,
+          "inference_log_count":$inferenceCount,
           "metrics_csv_count":$metricsCount,
-          "privacy":"The manifest contains no device identifiers or absolute paths. Agent audit omits pasted log source text; exported CSV model paths are reduced to basenames. Requests, answers and network metadata may still be present. No model files are included."
+          "privacy":"The manifest contains no device identifiers or absolute paths. Agent audit omits pasted log source text; exported CSV model paths are reduced to basenames. Inference traces contain prompts, messages, answers and tool data; review before sharing. No model files are included."
         }
     """.trimIndent() + "\n"
 
@@ -167,6 +172,18 @@ internal object DiagnosticBundle {
         zip.closeEntry()
     }
 
+    private fun putInferenceLogFile(zip: ZipOutputStream, name: String, file: File) {
+        zip.putNextEntry(ZipEntry(name))
+        BufferedReader(InputStreamReader(file.inputStream(), StandardCharsets.UTF_8)).useLines { lines ->
+            lines.forEach { line ->
+                val sanitized = LOCAL_PATH.replace(line, "[local path omitted]")
+                zip.write(sanitized.toByteArray(StandardCharsets.UTF_8))
+                zip.write('\n'.code)
+            }
+        }
+        zip.closeEntry()
+    }
+
     /** Metrics preambles contain the native model path; export only the useful basename. */
     private fun putMetricsFile(zip: ZipOutputStream, name: String, file: File) {
         zip.putNextEntry(ZipEntry(name))
@@ -194,9 +211,10 @@ internal object DiagnosticBundle {
 
 internal fun diagnosticBundleInputs(context: Context): DiagnosticBundle.Inputs {
     val root = context.getExternalFilesDir(null)
-    if (root == null) return DiagnosticBundle.Inputs(emptyList(), emptyList())
+    if (root == null) return DiagnosticBundle.Inputs(emptyList(), emptyList(), emptyList())
     val agent = AgentLog.files(context)
+    val inference = InferenceLog.files(context)
     val metrics = File(root, "metrics").listFiles { file -> file.isFile && file.name.endsWith(".csv") }
         ?.toList().orEmpty()
-    return DiagnosticBundle.Inputs(agent, metrics)
+    return DiagnosticBundle.Inputs(agent, inference, metrics)
 }

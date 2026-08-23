@@ -28,6 +28,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace bmoe;
 
@@ -210,11 +211,57 @@ static bool json_get_bool(const std::string & line, const char * key, bool dflt)
 struct SessionCmd {
     enum Kind { kGenerate, kClose } kind;
     std::string prompt;
+    std::string messages_json;
+    std::string tools_json;
+    std::string tool_choice = "auto";
+    std::string chat_template_kwargs_json;
     int id = 0;
     int n_predict = 128;
     bool think = true;
     bool clear_kv = true;
+    std::string parse_error;
 };
+
+static bool json_has_key(const std::string & line, const char * key) {
+    return line.find(std::string("\"") + key + "\"") != std::string::npos;
+}
+
+// Extract one JSON object/array value without interpreting its schema. The session owns schema
+// validation; the CLI only has to preserve structured messages and tools across the line protocol.
+static bool json_get_raw(const std::string & line, const char * key, std::string & out) {
+    const std::string needle = std::string("\"") + key + "\"";
+    size_t p = line.find(needle);
+    if (p == std::string::npos) return false;
+    p = line.find(':', p + needle.size());
+    if (p == std::string::npos) return false;
+    ++p;
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t' || line[p] == '\r' || line[p] == '\n')) ++p;
+    if (p >= line.size() || (line[p] != '{' && line[p] != '[')) return false;
+    std::vector<char> stack;
+    stack.push_back(line[p]);
+    bool quoted = false;
+    bool escaped = false;
+    for (size_t i = p + 1; i < line.size(); ++i) {
+        const char c = line[i];
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') quoted = false;
+            continue;
+        }
+        if (c == '"') quoted = true;
+        else if (c == '{' || c == '[') stack.push_back(c);
+        else if (c == '}' || c == ']') {
+            if (stack.empty() || (stack.back() == '{' && c != '}') || (stack.back() == '[' && c != ']')) return false;
+            stack.pop_back();
+        }
+        if (stack.empty()) {
+            out = line.substr(p, i - p + 1);
+            return true;
+        }
+    }
+    return false;
+}
 
 // Interactive session: keep the model loaded and the expert cache warm across prompts, reading
 // one JSON request per line from stdin and emitting the BMOE_* line protocol on stdout. See
@@ -267,6 +314,14 @@ static int run_session_loop(const RunConfig & cfg,
             } else if (cmd == "generate") {
                 c.kind = SessionCmd::kGenerate;
                 json_get_string(line, "prompt", c.prompt);
+                if (json_has_key(line, "messages") && !json_get_raw(line, "messages", c.messages_json))
+                    c.parse_error = "messages is not a valid JSON array/object";
+                if (c.parse_error.empty() && json_has_key(line, "tools") && !json_get_raw(line, "tools", c.tools_json))
+                    c.parse_error = "tools is not a valid JSON array/object";
+                json_get_string(line, "tool_choice", c.tool_choice);
+                if (c.parse_error.empty() && json_has_key(line, "chat_template_kwargs") &&
+                    !json_get_raw(line, "chat_template_kwargs", c.chat_template_kwargs_json))
+                    c.parse_error = "chat_template_kwargs is not a valid JSON object";
                 c.id = json_get_int(line, "id", 0);
                 c.n_predict = json_get_int(line, "n_predict", cfg.n_predict);
                 c.think = json_get_bool(line, "think", cfg.think);
@@ -283,7 +338,9 @@ static int run_session_loop(const RunConfig & cfg,
         {
             std::lock_guard<std::mutex> lk(mtx);
             stop.store(true);
-            queue.push_back({SessionCmd::kClose, "", 0, 0, true, true});
+            SessionCmd close;
+            close.kind = SessionCmd::kClose;
+            queue.push_back(std::move(close));
         }
         cv.notify_one();
     });
@@ -299,11 +356,22 @@ static int run_session_loop(const RunConfig & cfg,
         }
         if (cmd.kind == SessionCmd::kClose) break;
 
+        if (!cmd.parse_error.empty()) {
+            std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":false,\"msg\":\"%s\"}\n", cmd.id,
+                        json_escape(cmd.parse_error).c_str());
+            std::fflush(stdout);
+            continue;
+        }
+
         std::printf("BMOE_BEGIN {\"id\":%d}\n", cmd.id);
         std::fflush(stdout);
 
         GenerateRequest req;
         req.prompt = cmd.prompt;
+        req.messages_json = cmd.messages_json;
+        req.tools_json = cmd.tools_json;
+        req.tool_choice = cmd.tool_choice;
+        req.chat_template_kwargs_json = cmd.chat_template_kwargs_json;
         req.n_predict = cmd.n_predict;
         req.think = cmd.think;
         req.clear_kv = cmd.clear_kv;
@@ -315,6 +383,7 @@ static int run_session_loop(const RunConfig & cfg,
             // A bad request (empty prompt, context overflow) leaves the session usable; a decode
             // failure means the context is compromised, so end the loop.
             bool recoverable = r.error.find("exceeds the session n_ctx") != std::string::npos ||
+                               r.error.find("leaves no room for generated tokens") != std::string::npos ||
                                r.error.find("empty prompt") != std::string::npos;
             std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"msg\":\"%s\"}\n", cmd.id, recoverable ? "false" : "true",
                         json_escape(r.error).c_str());
@@ -326,20 +395,23 @@ static int run_session_loop(const RunConfig & cfg,
             continue;
         }
         const RunSummary & s = r.summary;
-        std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
+        std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"n_predict_requested\":%d,\"n_predict_effective\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
                     "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
                     "\"mtp_draft_s_tok\":%.4f,\"drafted_steps\":%lld,\"loop_overhead_s_tok\":%.4f,"
-                    "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
-                    cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
+                    "\"reasoning\":\"%s\",\"text\":\"%s\",\"rendered_prompt\":\"%s\",\"tool_calls\":%s}\n",
+                    cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.n_predict_requested, s.n_predict_effective,
+                    s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
                     s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib, s.mtp_drafted, s.mtp_accepted,
                     s.mtp_decodes, s.mtp_draft_s_per_token, s.drafted_steps, s.loop_overhead_s_per_token,
-                    json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
+                    json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str(),
+                    json_escape(r.rendered_prompt).c_str(),
+                    r.tool_calls_json.empty() ? "[]" : r.tool_calls_json.c_str());
         std::fflush(stdout);
     }
 

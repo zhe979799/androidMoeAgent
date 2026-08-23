@@ -10,6 +10,9 @@
         name="agent_logs"
         path="agent-logs/" />
     <external-files-path
+        name="inference_logs"
+        path="inference-logs/" />
+    <external-files-path
         name="diagnostic_bundles"
         path="diagnostic-bundles/" />
 </paths>

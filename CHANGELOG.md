@@ -7,6 +7,14 @@ Semantic Versioning.
 ## [0.21.7] - 2026-08-22
 
 ### Added
+- **Prompt/answer inference traces.** Android now keeps bounded JSONL traces for ordinary chat and
+  Agent control turns, including the actual prompt or structured messages, template arguments,
+  native tool calls, reasoning, answer and turn metrics. Metrics can share/delete these traces, and
+  diagnostic bundles include them for investigating unrelated answers.
+- **Native GPT-OSS Harmony turns.** Structured Agent requests now pass OpenAI-compatible
+  `developer`, `user`, `assistant` and `tool` messages plus native function schemas through the
+  session protocol. GPT-OSS tool calls are returned as structured JSON and reasoning/tool channels
+  remain model-owned; the legacy prompt path remains available for other architectures.
 - **Custom Agent SystemMessage.** The Android Agent workspace now lets users edit and persist a
   SystemMessage, restore the built-in default, and preview the effective prompt. Built-in safety
   rules and the selected tool contract are appended after the custom message on every Agent turn.
@@ -18,6 +26,9 @@ Semantic Versioning.
 - **Agent session boundary and explicit launch.** Agent control turns now use a separate visible transcript, opening the workspace no longer starts inference or network observations automatically, ordinary chat no longer shows stale Agent errors/results, and the home network-analysis entry uses the persisted toolkit authorization. Loading can be cancelled from the primary action area.
 - **Agent 观测与布局修复。** Agent 工作台新增引擎阶段、工具调用计数、实时 token 进度、缓存/I/O/温度信息，工具原文改为限高滚动区域，输入区适配键盘和长模型名；工具集页面改为中文能力卡片。诊断提示词要求先收集多源证据、避免重复探测，并明确区分事实、可能原因、置信度和下一步。
 - **Agent 诊断稳健性。** 针对真实设备日志中 Agent 多次被取消、长时间生成英文 `<think>` 却没有执行工具的问题，Agent 现在强制使用无思考的短诊断预算，兼容从思考/说明文本中提取严格工具 JSON，并在展示前过滤完整或截断的思考内容；单次诊断增加 3 分钟总时限。
+- **Agent 观测与输出预算。** Agent 工作台新增阶段时间线和最近 512 条 token 级 telemetry（累计数量与丢弃数量单独显示），输出 token 改为可自由输入；原生 session 在精确 tokenization 后按 context 剩余空间自动收窄每个模型回合的预算。
+- **Agent 日志选择分享。** Metrics 页面现在可以逐条选择 Agent trace、全选或清空选择后仅分享选中的日志，不再默认发送全部保留记录。
+- **Inference trace 选择分享与观测性能。** Metrics 页面同样支持逐条选择 inference trace 后分享；Agent token 观测改用固定高度的惰性列表、稳定 key 和非动画跟随，减少长输出时的页面重组与滚动开销。
 
 ### Changed
 - **Android: reproducible local development signing.** The shared development keystore is tracked

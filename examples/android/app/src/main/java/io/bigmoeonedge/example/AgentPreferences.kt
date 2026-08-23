@@ -6,14 +6,12 @@ import android.content.Context
 object AgentPreferences {
     private const val PREFS = "agent_preferences"
     private const val SYSTEM_MESSAGE = "system_message"
-    const val MAX_SYSTEM_MESSAGE_CHARS = 16 * 1024
-
     fun load(context: Context): String = context
         .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         .getString(SYSTEM_MESSAGE, "")
         .orEmpty()
 
-    fun normalize(value: String): String = value.trim().take(MAX_SYSTEM_MESSAGE_CHARS)
+    fun normalize(value: String): String = value.trim()
 
     fun save(context: Context, value: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

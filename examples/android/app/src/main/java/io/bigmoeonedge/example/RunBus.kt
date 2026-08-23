@@ -30,6 +30,7 @@ data class UiState(
     val ioMode: String? = null,     // effective read mode reported by the engine (direct / buffered)
     val cpuTempC: Double? = null,   // SoC/CPU temperature (°C), sampled while generating (battery fallback)
     val sessionSig: String? = null, // signature of the loaded session (AppSettings.sessionSignature)
+    val arch: String? = null,       // native model architecture reported by BMOE_READY
     // How the loaded model can honour "Thinking off", reported once at BMOE_READY: "template" (its
     // chat template reads the flag), "prefill" (it does not, so the engine closes the reasoning span
     // in the prompt), or "none" (neither — the model always reasons, and the switch is hidden rather
@@ -46,6 +47,9 @@ data class UiState(
     // waits on this rather than guessing from READY, which can also mean a model just finished loading.
     val generationId: Long = 0,
     val lastCompletedText: String = "",
+    // OpenAI-compatible tool calls emitted by a structured chat template, kept separate from the
+    // visible answer because GPT-OSS Harmony tool turns can have empty final content.
+    val lastCompletedToolCalls: String = "[]",
     // Agent control prompts are deliberately hidden from the ordinary transcript. They also must
     // not become an invisible continuation context for the next ordinary chat turn.
     val clearKvOnNextPrompt: Boolean = false,
@@ -59,6 +63,17 @@ data class UiState(
     val agentPromptPreview: String = "",
     val agentCompactions: Int = 0,
     val agentRunId: Long = 0,
+    val agentRunStartedAtMs: Long = 0,
+    val agentStages: List<AgentStageRecord> = emptyList(),
+    val agentTokens: List<AgentTokenSample> = emptyList(),
+    val agentTokensSeen: Int = 0,
+    val agentTokensDropped: Int = 0,
+    val agentRequestedTokens: Int = 256,
+    val agentEffectiveTokens: Int = 0,
+    val agentPromptTokens: Int = 0,
+    val agentContextTokens: Int = 0,
+    val agentContextUsedTokens: Int = 0,
+    val agentBudgetClamped: Boolean = false,
 ) {
     val loading get() = state == EngineState.LOADING
     val generating get() = state == EngineState.GENERATING
@@ -78,7 +93,119 @@ object RunBus {
     /** Reset the per-generation fields for a new prompt, preserving session state and signature. */
     fun resetGeneration() = _state.update {
         it.copy(telemetry = Telemetry(), answer = "", reasoning = "", summary = "", error = null,
-            lastCompletedText = "", clearKvOnNextPrompt = false)
+            lastCompletedText = "", lastCompletedToolCalls = "[]", clearKvOnNextPrompt = false)
+    }
+
+    fun resetAgentObservation(requestedTokens: Int, contextTokens: Int, nowMs: Long) = _state.update {
+        it.copy(
+            agentRunStartedAtMs = nowMs,
+            agentStages = emptyList(),
+            agentTokens = emptyList(),
+            agentTokensSeen = 0,
+            agentTokensDropped = 0,
+            agentRequestedTokens = requestedTokens,
+            agentEffectiveTokens = 0,
+            agentPromptTokens = 0,
+            agentContextTokens = contextTokens,
+            agentContextUsedTokens = 0,
+            agentBudgetClamped = false,
+        )
+    }
+
+    fun beginAgentStage(kind: AgentStageKind, title: String, nowMs: Long, detail: String = ""): Long {
+        val id = AgentObservation.nextStageId()
+        _state.update {
+            it.copy(agentStages = it.agentStages + AgentStageRecord(
+                id,
+                kind,
+                title,
+                AgentStageStatus.ACTIVE,
+                nowMs,
+                tokenStart = it.agentTokensSeen + 1,
+                detail = detail,
+            ))
+        }
+        return id
+    }
+
+    fun updateAgentStage(id: Long, detail: String, tokenEnd: Int? = null) = _state.update {
+        it.copy(agentStages = it.agentStages.map { stage ->
+            if (stage.id == id) stage.copy(detail = detail, tokenEnd = tokenEnd ?: stage.tokenEnd) else stage
+        })
+    }
+
+    fun updateActiveAgentStage(kind: AgentStageKind, detail: String, tokenEnd: Int? = null) = _state.update {
+        val active = it.agentStages.indexOfLast { stage -> stage.kind == kind && stage.status == AgentStageStatus.ACTIVE }
+        if (active < 0) it else it.copy(agentStages = it.agentStages.toMutableList().also { stages ->
+            val stage = stages[active]
+            stages[active] = stage.copy(detail = detail, tokenEnd = tokenEnd ?: stage.tokenEnd)
+        })
+    }
+
+    fun updateLatestActiveAgentStage(detail: String, tokenEnd: Int? = null) = _state.update {
+        val active = it.agentStages.indexOfLast { stage -> stage.status == AgentStageStatus.ACTIVE }
+        if (active < 0) it else it.copy(agentStages = it.agentStages.toMutableList().also { stages ->
+            val stage = stages[active]
+            stages[active] = stage.copy(detail = detail, tokenEnd = tokenEnd ?: stage.tokenEnd)
+        })
+    }
+
+    fun finishAgentStage(id: Long, status: AgentStageStatus, nowMs: Long, detail: String = "", tokenEnd: Int? = null) =
+        _state.update {
+            it.copy(agentStages = it.agentStages.map { stage ->
+                if (stage.id == id) stage.copy(
+                    status = status,
+                    endedAtMs = nowMs,
+                    detail = detail.ifBlank { stage.detail },
+                    tokenEnd = tokenEnd ?: stage.tokenEnd,
+                ) else stage
+            })
+        }
+
+    fun finishLatestAgentStage(kind: AgentStageKind, status: AgentStageStatus, nowMs: Long, detail: String = "") =
+        _state.update {
+            val index = it.agentStages.indexOfLast { stage -> stage.kind == kind && stage.status == AgentStageStatus.ACTIVE }
+            if (index < 0) it else it.copy(agentStages = it.agentStages.toMutableList().also { stages ->
+                val stage = stages[index]
+                stages[index] = stage.copy(status = status, endedAtMs = nowMs, detail = detail.ifBlank { stage.detail })
+            })
+        }
+
+    fun finishActiveAgentStages(status: AgentStageStatus, nowMs: Long, detail: String) = _state.update {
+        it.copy(agentStages = it.agentStages.map { stage ->
+            if (stage.status == AgentStageStatus.ACTIVE) stage.copy(status = status, endedAtMs = nowMs, detail = detail) else stage
+        })
+    }
+
+    fun appendAgentToken(sample: AgentTokenSample, stageDetail: String? = null) = _state.update {
+        val retained = (it.agentTokens + sample).takeLast(AgentObservation.TOKEN_RETENTION_LIMIT)
+        val stages = if (stageDetail == null) it.agentStages else {
+            val index = it.agentStages.indexOfLast { stage -> stage.status == AgentStageStatus.ACTIVE }
+            if (index < 0) it.agentStages else it.agentStages.toMutableList().also { mutableStages ->
+                mutableStages[index] = mutableStages[index].copy(
+                    detail = stageDetail,
+                    tokenEnd = it.agentTokensSeen + 1,
+                )
+            }
+        }
+        it.copy(
+            agentTokens = retained,
+            agentStages = stages,
+            agentTokensSeen = it.agentTokensSeen + 1,
+            agentTokensDropped = (it.agentTokensSeen + 1 - retained.size).coerceAtLeast(0),
+            agentEffectiveTokens = sample.steps,
+            agentPromptTokens = it.agentPromptTokens,
+            agentBudgetClamped = it.agentRequestedTokens > 0 && sample.steps < it.agentRequestedTokens,
+        )
+    }
+
+    fun updateAgentBudget(promptTokens: Int, effectiveTokens: Int, contextUsedTokens: Int = 0) = _state.update {
+        it.copy(
+            agentPromptTokens = promptTokens,
+            agentEffectiveTokens = effectiveTokens,
+            agentContextUsedTokens = if (contextUsedTokens > 0) contextUsedTokens else it.agentContextUsedTokens,
+            agentBudgetClamped = it.agentRequestedTokens > 0 && effectiveTokens < it.agentRequestedTokens,
+        )
     }
 
     fun update(block: (UiState) -> UiState) = _state.update(block)

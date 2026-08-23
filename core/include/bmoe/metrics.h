@@ -100,6 +100,8 @@ struct TokenMetrics {
 
 struct RunSummary {
     int n_generated = 0;
+    int n_predict_requested = 0;
+    int n_predict_effective = 0;
     double gen_seconds = 0.0;
     double s_per_token = 0.0;
     double tokens_per_second = 0.0;

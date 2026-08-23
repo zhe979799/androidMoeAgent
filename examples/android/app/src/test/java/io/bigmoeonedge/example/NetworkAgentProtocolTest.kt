@@ -41,6 +41,22 @@ class NetworkAgentProtocolTest {
     }
 
     @Test
+    fun parsesHarmonyToolCallsAndBuildsNativeSchemas() {
+        val call = NetworkAgentProtocol.parseNativeToolCall(
+            """[{"id":"call_1","type":"function","function":{"name":"dns_lookup","arguments":"{\"domain\":\"example.com\",\"record_type\":\"A\"}"}}]"""
+        )
+        assertNotNull(call)
+        assertEquals("call_1", call!!.id)
+        assertEquals("example.com", call.arguments.getString("domain"))
+
+        val tools = org.json.JSONArray(NetworkAgentProtocol.nativeToolsJson(setOf("dns_lookup")))
+        assertEquals(1, tools.length())
+        val function = tools.getJSONObject(0).getJSONObject("function")
+        assertEquals("dns_lookup", function.getString("name"))
+        assertTrue(function.getJSONObject("parameters").getJSONObject("properties").has("domain"))
+    }
+
+    @Test
     fun extractsToolCallWrappedInModelThinking() {
         val call = NetworkAgentProtocol.parseToolCall(
             "<think>先检查网络。示例格式如下。</think>\n" +

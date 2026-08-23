@@ -189,8 +189,17 @@ def build_gemma4(out):
     swa_pattern = [i != FULL_ATTN_LAYER for i in range(N_LAYER)]
     w.add_sliding_window_pattern(swa_pattern)
     w.add_sliding_window(N_CTX)
-    w.add_key_length_swa(N_EMBD_HEAD)
-    w.add_value_length_swa(N_EMBD_HEAD)
+    # gguf renamed the SWA-specific metadata helpers; the generic key/value lengths carry the
+    # same dimensions on current writers and keep this byte-identity fixture usable across both
+    # API generations.
+    if hasattr(w, "add_key_length_swa"):
+        w.add_key_length_swa(N_EMBD_HEAD)
+        w.add_value_length_swa(N_EMBD_HEAD)
+    else:
+        # Newer gguf dropped the convenience methods but llama.cpp still expects the Gemma4
+        # architecture-specific SWA keys when loading a sliding-window fixture.
+        w.add_uint32("gemma4.attention.key_length_swa", N_EMBD_HEAD)
+        w.add_uint32("gemma4.attention.value_length_swa", N_EMBD_HEAD)
     w.add_embedding_length_per_layer_input(0)
 
     add_tokenizer(w, tokens, scores, toktypes)

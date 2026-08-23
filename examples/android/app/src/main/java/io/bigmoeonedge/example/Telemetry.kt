@@ -25,6 +25,8 @@ data class Telemetry(
     // means a throttled/preempted core. 0 when the platform can't measure them.
     var majflt: Double = 0.0,
     var cpuMs: Double = 0.0,
+    var readMiB: Double = 0.0,
+    var denseResidentFrac: Double = -1.0,
     var text: String = "",
     // The thinking span so far when the model is reasoning, kept apart from [text] so the UI can
     // render it as a distinct block. Empty with thinking off or on a non-reasoning model.
@@ -81,6 +83,24 @@ data class Telemetry(
         return if (perTok > 0) 1.0 / perTok else -1.0
     }
 }
+
+data class ParsedTelemetryToken(
+    val generation: Int,
+    val step: Int,
+    val steps: Int,
+    val text: String,
+    val reasoning: String,
+    val wallMs: Double,
+    val computeMs: Double,
+    val ioMs: Double,
+    val stallMs: Double,
+    val mgmtMs: Double,
+    val readMiB: Double,
+    val cacheHitPct: Double,
+    val majflt: Double,
+    val cpuMs: Double,
+    val denseResidentFrac: Double,
+)
 
 /**
  * One token's time, split into the three wall-additive terms the panel draws, plus the diagnostics
@@ -170,6 +190,9 @@ fun breakdown(t: Telemetry, overlap: Boolean, busyThreads: Int): Breakdown {
 class TelemetryParser {
     var current = Telemetry()
         private set
+    var latestToken: ParsedTelemetryToken? = null
+        private set
+    private var generation = 0
 
     // Accumulated answer/reasoning of the generation in flight. StringBuilder, not the data
     // class's String fields: appending a token to a String re-copies the whole answer per token,
@@ -180,6 +203,8 @@ class TelemetryParser {
     /** Clear the per-token state at the start of a new generation. */
     fun reset() {
         current = Telemetry()
+        latestToken = null
+        generation += 1
         text.setLength(0)
         reasoning.setLength(0)
     }
@@ -200,6 +225,8 @@ class TelemetryParser {
             current.cacheHitPct = o.optDouble("cache_hit_pct", -1.0)
             current.majflt = o.optDouble("majflt", 0.0)
             current.cpuMs = o.optDouble("cpu_ms", 0.0)
+            current.readMiB = o.optDouble("read_mb", 0.0)
+            current.denseResidentFrac = o.optDouble("dense_resident_frac", -1.0)
             if (o.optInt("reset") == 1) {
                 reasoning.setLength(0)
                 text.setLength(0)
@@ -208,6 +235,23 @@ class TelemetryParser {
             text.append(o.optString("delta_text"))
             current.reasoning = reasoning.toString()
             current.text = text.toString()
+            latestToken = ParsedTelemetryToken(
+                generation = generation,
+                step = current.step,
+                steps = current.steps,
+                text = o.optString("delta_text"),
+                reasoning = o.optString("delta_reasoning"),
+                wallMs = current.wallMs,
+                computeMs = current.computeMs,
+                ioMs = current.ioMs,
+                stallMs = current.stallMs,
+                mgmtMs = current.mgmtMs,
+                readMiB = current.readMiB,
+                cacheHitPct = current.cacheHitPct,
+                majflt = current.majflt,
+                cpuMs = current.cpuMs,
+                denseResidentFrac = current.denseResidentFrac,
+            )
         }.isSuccess
     }
 }

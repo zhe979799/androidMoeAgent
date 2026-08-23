@@ -210,7 +210,12 @@ prints just the summary lines.
 `# summary ...` trailer. Intended for the benchmark sweep.
 
 The Android Agent UI renders a compact localized summary for each tool result and keeps the full
-JSON expandable; the model still receives the full structured result. The Toolkit catalog persists
+JSON expandable; the model still receives the full structured result. Its Agent-only observation
+panel also keeps a staged timeline and the latest 512 per-token samples. A sample includes the
+decoded delta and the timing/cache/I-O fields from `BMOE_PROGRESS`; the panel shows cumulative
+token count and how many old samples were dropped from the UI. This 512-sample retention limit is
+not an output budget. The Agent output budget is a free-form positive integer per model turn, and
+the session reports the requested/effective pair after context clamping. The Toolkit catalog persists
 only selected registry IDs, and the coordinator rejects calls outside the resulting tool set. Agent
 control turns use a separate transcript from ordinary chat, and entering the Agent workspace does
 not start a model or network operation until the user confirms. The read-only registry can inspect
@@ -228,6 +233,21 @@ resolved argv with the model path replaced. The tuner changes only cache and I/O
 fresh sessions, and recommends only a complete repeated candidate whose greedy output matches. It
 never changes persisted settings. Missing temperature readings and failed trials remain visible in
 the report; they are not silently treated as controlled evidence.
+
+The session line protocol accepts optional `messages`, `tools` and `chat_template_kwargs` JSON values on `generate` requests.
+When present, the engine renders the structured messages through the model's own chat template and
+returns `tool_calls` in `BMOE_DONE`; an empty array means the turn ended with ordinary content.
+GPT-OSS uses this path for Harmony `developer`/`tool` roles, channel-aware parsing and template
+arguments such as `reasoning_effort`. Requests that
+omit these fields keep the legacy single-string prompt behavior.
+
+Android also writes a bounded `inference-logs/inference-*.jsonl` trace for every generation. Each
+trace has a `start` event with the exact prompt or structured message/tool payload and a `finish`
+event with the final chat-template-rendered prompt, raw visible answer, reasoning, tool calls, status
+and turn metrics. These traces are
+separate from the performance CSV because they are intended to diagnose semantic mismatches such as
+an answer that does not address the user's question. They may contain user prompts and tool data;
+review before sharing. The newest 30 files are retained.
 
 ### Run-parameter preamble
 
@@ -463,7 +483,8 @@ BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>,
             "think_ctl":"template|prefill|none","n_expert_used":<int>}  # once, after the model loads
 BMOE_BEGIN {"id":<int>}                                                # a generation started
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
-BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
+BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,
+            "n_predict_requested":<int>,"n_predict_effective":<int>,"tok_s":<float>,
             "prefill_s":<float>,"prefill_tps":<float>,"load_s":<float>,"cache_hit_pct":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
@@ -512,6 +533,12 @@ never does.
 `prefill` is the opposite shape: no span of the model's own, but the format separates reasoning
 structurally (a channel), and starting the turn past that section is not something it can decline.
 
+`n_predict_requested` is the caller's requested output budget. After the rendered prompt is
+tokenized, the engine reserves eight context positions and sets `n_predict_effective` to the
+smaller of the request and the remaining `n_ctx` room. A request larger than the remaining room is
+therefore truncated rather than rejected. If the prompt itself leaves no room, the request remains
+recoverable with `fatal:false` and no `BMOE_DONE` is emitted.
+
 `BMOE_DONE` carries the end-of-generation summary (the one-shot mode's `generation:` /
 `moe-stream:` text lines are not emitted in session mode). `n_prompt` is the tokens actually
 prefilled **this turn** (the suffix after any reused KV prefix), and `n_past` is the total context
@@ -521,8 +548,8 @@ AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not jus
 `cache_resident_mib`/`cache_budget_mib` track the fixed cache, `read_mib` is the
 total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
 cache-management cost. `text` is the final answer and `reasoning` the final thinking span (empty
-unless the model reasoned), same split as the per-token lines. `BMOE_ERROR` with `fatal:false` is a rejected
-request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
+unless the model reasoned), same split as the per-token lines. `BMOE_ERROR` with `fatal:false` is a
+recoverable request error (for example, an empty prompt or no context room) and leaves the session usable;
 `fatal:true` means the process is ending.
 
 ## Decode traces

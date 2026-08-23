@@ -26,10 +26,16 @@ struct RunResult {
     bool cancelled = false; // generation was interrupted by Session::cancel() (ok stays true)
     std::string error;
     std::string generated_text;
+    // Exact text rendered by the model's chat template before tokenization. This is diagnostic
+    // evidence only; it includes template-generated role/channel metadata and may be large.
+    std::string rendered_prompt;
     // The reasoning span, when a thinking model's chat template separated it from the answer.
     // Empty otherwise (chat off, non-reasoning model, harmony no-think). Display-only; the answer
     // in generated_text already has it stripped. See TokenMetrics::reasoning.
     std::string reasoning_text;
+    // OpenAI-compatible tool calls emitted by a structured chat template, encoded as a JSON array.
+    // Empty for ordinary final answers and legacy prompt-only generations.
+    std::string tool_calls_json;
     RunSummary summary;
     explicit operator bool() const { return ok; }
 };

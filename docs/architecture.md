@@ -35,7 +35,8 @@ tests/          byte-identity gates
 examples/android an APK that drives bmoe-cli via ProcessBuilder; its Chinese Agent workspace
                  owns a local, bounded Android tool registry, while the community screen adapts
                  public ModelScope ranking metadata without coupling discovery to model downloads;
-                 a code-owned toolkit catalog composes the Agent's enabled tool registry
+                 a code-owned toolkit catalog composes the Agent's enabled tool registry; GPT-OSS
+                 turns use structured Harmony messages/tools while other models retain the text path
 ```
 
 Dependencies point inward: adapters depend on the port headers, the CLI composes them.
