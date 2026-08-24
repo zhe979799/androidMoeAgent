@@ -58,7 +58,14 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
    columns or the `BMOE_*` protocol change, `docs/roadmap.md` when a listed future item
    ships, and `examples/android/README.md` when the catalog, settings or build flow change.
    Docs that name a file the code no longer has are worse than no docs.
-7. **Review exactly what is being published, every time.** This repo is public and every push
+7. **Protocol selection is explicit.** GPT-OSS and Qwen Agent behavior is a user-selectable, persisted and
+   visible configuration. Runtime code must not infer protocol roles, thinking mode or tool-template behavior
+   from a model filename or model identity. Any new protocol profile must include a minimal unit test for its
+   role and execution parameters.
+8. **Keep security and tests proportional.** Do not expand work with separate security hardening or broad
+   security review unless the user explicitly requests it. For each change, retain only the minimal tests
+   needed to verify the changed behavior; do not add broad scenario coverage by default.
+9. **Review exactly what is being published, every time.** This repo is public and every push
    is permanent record. Before any commit, push, PR or release: run `git status --short` and
    stage by explicit path only — never `git add -A` / `git add .`; untracked files in the
    working tree are not yours to publish. Logs, CSVs and bench evidence get a scan for

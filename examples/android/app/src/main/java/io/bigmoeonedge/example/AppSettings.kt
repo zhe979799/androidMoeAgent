@@ -8,10 +8,10 @@ import android.content.Context
  * pair of switches, which could express the same policy two ways (or contradict each other).
  */
 enum class DenseWeights(val flag: String, val label: String, val blurb: String) {
-    MMAP("mmap", "Mmap (baseline)", "Left to the kernel, faulted in as touched. The baseline."),
-    WARM("warm", "Warm at load", "Paged in once at load, so the first tokens do not fault. Best when the model fits in RAM."),
-    ANON("anon", "Anon (O_DIRECT)", "Read into the app's own memory. Reclaim compresses them instead of dropping them, so a refault costs no flash read. The default."),
-    AHWB("ahwb", "Pinned (dma-buf)", "As Anon, but reclaim cannot touch it at all, not even to compress. Pays off over a long conversation."),
+    MMAP("mmap", "Mmap（基线）", "交给内核按需调页，作为对照基线。"),
+    WARM("warm", "加载时预热", "加载时一次性调入，首轮生成不会产生缺页；适合模型能放入内存的情况。"),
+    ANON("anon", "匿名内存（O_DIRECT）", "读入应用自己的内存。回收时压缩而不是丢弃，重新访问无需再次读取闪存；默认选项。"),
+    AHWB("ahwb", "固定内存（dma-buf）", "和匿名内存相同，但回收完全无法触碰它，连压缩也不会；适合长对话。"),
 }
 
 /**

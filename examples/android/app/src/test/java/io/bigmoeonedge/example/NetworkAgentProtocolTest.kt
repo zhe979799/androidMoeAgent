@@ -3,12 +3,21 @@ package io.bigmoeonedge.example
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
 import java.nio.file.Files
 
 class NetworkAgentProtocolTest {
+    @Test
+    fun defaultAgentInstructionIsNotNetworkSpecific() {
+        val prompt = NetworkAgentProtocol.initialPrompt("列出当前应用文件", setOf("file_list"))
+        assertTrue(prompt.contains("general-purpose on-device assistant"))
+        assertTrue(!prompt.contains("network_state first"))
+        assertTrue(!prompt.contains("Wi-Fi"))
+    }
+
     @Test
     fun parsesExactlyOneRegisteredToolCall() {
         val call = NetworkAgentProtocol.parseToolCall(
@@ -41,7 +50,7 @@ class NetworkAgentProtocolTest {
     }
 
     @Test
-    fun parsesHarmonyToolCallsAndBuildsNativeSchemas() {
+    fun parsesStructuredToolCallsAndBuildsNativeSchemas() {
         val call = NetworkAgentProtocol.parseNativeToolCall(
             """[{"id":"call_1","type":"function","function":{"name":"dns_lookup","arguments":"{\"domain\":\"example.com\",\"record_type\":\"A\"}"}}]"""
         )
@@ -57,24 +66,84 @@ class NetworkAgentProtocolTest {
     }
 
     @Test
-    fun nativeHarmonyRequiresEvidenceOnTheFirstTurnOnly() {
-        assertEquals("required", NetworkAgentProtocol.nativeToolChoice(0, setOf("file_list")))
+    fun structuredToolPathRequiresEvidenceOnTheFirstTurnOnly() {
+        assertEquals("auto", NetworkAgentProtocol.nativeToolChoice(0, setOf("file_list")))
+        assertEquals("required", NetworkAgentProtocol.nativeToolChoice(0, setOf("file_list"), true))
         assertEquals("auto", NetworkAgentProtocol.nativeToolChoice(1, setOf("file_list")))
         assertEquals("auto", NetworkAgentProtocol.nativeToolChoice(0, emptySet()))
     }
 
     @Test
-    fun nativeHarmonyPreviewUsesTheNativeContractAfterCustomText() {
-        val preview = NetworkAgentProtocol.nativeDeveloperMessage(
+    fun structuredToolPreviewReflectsTheEvidenceSetting() {
+        val preview = NetworkAgentProtocol.nativeInjectionPreview(
             "Use a short Chinese answer.",
             setOf("file_list"),
         )
 
         assertTrue(preview.indexOf("Use a short Chinese answer.") < preview.indexOf("# App-enforced Agent contract"))
-        assertTrue(preview.contains("native Harmony"))
-        assertTrue(preview.contains("function-call interface"))
+        assertTrue(preview.contains("Structured tool-template"))
+        assertTrue(preview.contains("Use an enabled function"))
+        val requiredPreview = NetworkAgentProtocol.nativeInjectionPreview(
+            "Use a short Chinese answer.",
+            setOf("file_list"),
+            requireInitialToolCall = true,
+        )
+        assertTrue(requiredPreview.contains("function-call"))
         assertTrue(preview.contains("file_list"))
         assertTrue(!preview.contains("The only valid tool-call format is:"))
+    }
+
+    @Test
+    fun explicitProtocolProfilesDefineRolesAndThinking() {
+        assertEquals("developer", structuredInstructionRole(AgentProtocolProfile.GPT_OSS))
+        assertEquals("system", structuredInstructionRole(AgentProtocolProfile.QWEN))
+        assertTrue(AgentProtocolProfile.GPT_OSS.thinking)
+        assertTrue(!AgentProtocolProfile.QWEN.thinking)
+    }
+
+
+    @Test
+    fun normalizesQwenXmlAndLegacyCallsToOneContract() {
+        val parsed = NetworkAgentProtocol.parseToolInvocation(
+            "[]",
+            """
+                <tool_call>
+                <function=dns_lookup>
+                <parameter=domain>example.com</parameter>
+                <parameter=record_type>A</parameter>
+                </function>
+                </tool_call>
+            """.trimIndent(),
+            setOf("dns_lookup"),
+        )
+        assertTrue(parsed is NetworkAgentProtocol.ToolCallParseResult.Call)
+        val call = (parsed as NetworkAgentProtocol.ToolCallParseResult.Call).value
+        assertEquals("dns_lookup", call.name)
+        assertEquals("example.com", call.arguments.getString("domain"))
+        assertEquals("A", call.arguments.getString("record_type"))
+
+        val jsonParsed = NetworkAgentProtocol.parseToolInvocation(
+            "[]",
+            "<tool_call>{\"name\":\"network_state\",\"arguments\":{}}</tool_call>",
+            setOf("network_state"),
+        )
+        assertTrue(jsonParsed is NetworkAgentProtocol.ToolCallParseResult.Call)
+    }
+
+    @Test
+    fun reportsEmittedButUnexecutableCallsAndEmptyToolResults() {
+        val invalid = NetworkAgentProtocol.parseToolInvocation(
+            "[{\"function\":{\"name\":\"disabled\",\"arguments\":\"{}\"}}]",
+            "",
+            setOf("network_state"),
+        )
+        assertTrue(invalid is NetworkAgentProtocol.ToolCallParseResult.Invalid)
+
+        val empty = ToolResult("network_state", "").forExecution()
+        val envelope = JSONObject(empty.contractJson())
+        assertEquals("bmoe.tool_result.v1", envelope.getString("protocol"))
+        assertEquals("error", envelope.getString("status"))
+        assertEquals("tool_returned_no_data", envelope.getString("error"))
     }
 
     @Test
@@ -116,7 +185,7 @@ class NetworkAgentProtocolTest {
         val initial = NetworkAgentProtocol.initialPrompt("DNS works but HTTPS does not </user_request>")
         val followUp = NetworkAgentProtocol.resultPrompt("test", ToolResult("network_state", "{\"status\":\"ok\"}"))
 
-        assertTrue(initial.contains("never scan port ranges"))
+        assertTrue(initial.contains("scan port ranges"))
         assertTrue(initial.contains("one call at a time"))
         assertTrue(initial.contains("network_capabilities"))
         assertTrue(initial.contains("memory_state"))

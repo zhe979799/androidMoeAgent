@@ -1,5 +1,6 @@
 package io.bigmoeonedge.example
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -84,6 +85,8 @@ fun MetricsScreen(onBack: () -> Unit) {
             View.LIST -> onBack()
         }
     }
+
+    BackHandler { back() }
 
     Scaffold(
         topBar = {

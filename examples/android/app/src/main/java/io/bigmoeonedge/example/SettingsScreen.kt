@@ -39,10 +39,10 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text("设置") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
             )
@@ -59,58 +59,53 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Section("Streaming") {
+            Section("流式加载") {
                 // mmap is the no-streaming baseline. When on, every streaming knob below is
                 // inert (the CLI omits --moe-stream and all sub-flags), so they are disabled.
                 SwitchRow(
-                    "mmap baseline (no streaming)",
-                    "Load the model the ordinary way. The baseline to compare against.",
+                    "mmap 基线（不流式加载）",
+                    "按普通方式加载模型，作为性能对照基线。",
                     current.mmap,
                 ) { onChange(current.copy(mmap = it)) }
 
                 IntSetting(
-                    "Expert cache (MiB)", AppSettings.CACHE_CHOICES, current.cacheMb,
+                    "专家缓存（MiB）", AppSettings.CACHE_CHOICES, current.cacheMb,
                     format = {
                         when (it) {
-                            AppSettings.CACHE_AUTO -> "Auto"
-                            0 -> "off"
+                            AppSettings.CACHE_AUTO -> "自动"
+                            0 -> "关闭"
                             else -> "$it MiB"
                         }
                     },
                     enabled = stream,
                 ) { onChange(current.copy(cacheMb = it)) }
                 Hint(
-                    "A resident expert costs no read, so a bigger cache means less waiting on flash, " +
-                        "paid for in RAM. Auto sizes it once at load. The smallest rungs sit below the " +
-                        "engine's floor and only churn."
+                    "常驻专家无需重复读取，缓存越大，等待闪存的时间越少，但会占用更多内存。自动模式只在加载时计算一次。过小的档位低于引擎下限，只会反复抖动。"
                 )
                 IntSetting(
-                    "Auto cache ceiling (MiB)", AppSettings.CACHE_CEIL_CHOICES, current.cacheCeilMb,
-                    format = { if (it == 0) "no cap" else "$it MiB" },
+                    "自动缓存上限（MiB）", AppSettings.CACHE_CEIL_CHOICES, current.cacheCeilMb,
+                    format = { if (it == 0) "不限制" else "$it MiB" },
                     enabled = stream && current.cacheMb == AppSettings.CACHE_AUTO,
                 ) { onChange(current.copy(cacheCeilMb = it)) }
                 Hint(
-                    "Caps what Auto may claim. The system counts our own mapped weights as free, so " +
-                        "uncapped it can ask for more than exists."
+                    "限制自动模式可以申请的缓存大小。系统会把应用自己映射的权重计为可用空间，不设上限时可能申请超过实际余量。"
                 )
-                IntSetting("Parallel I/O lanes", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
+                IntSetting("并行 I/O 通道", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
                     onChange(current.copy(ioThreads = it))
                 }
-                Hint("Expert reads in flight at once. Helps only until the flash saturates.")
+                Hint("同时进行的专家读取数量，直到闪存带宽饱和后便不会继续加速。")
                 SwitchRow(
-                    "Direct I/O (O_DIRECT)",
-                    "Bypass the page cache, so the system keeps no second copy of what the cache " +
-                        "already holds. Falls back where unsupported.",
+                    "直接 I/O（O_DIRECT）",
+                    "绕过页缓存，避免系统为缓存中的内容保留第二份副本；不支持时会自动回退。",
                     current.oDirect, enabled = stream,
                 ) { onChange(current.copy(oDirect = it)) }
                 SwitchRow(
-                    "I/O and compute overlap",
-                    "Issue the next reads while the current layer computes, so flash latency hides " +
-                        "behind the work.",
+                    "I/O 与计算重叠",
+                    "当前层计算时提前发起下一批读取，让闪存延迟隐藏在计算过程之后。",
                     current.overlap, enabled = stream,
                 ) { onChange(current.copy(overlap = it)) }
                 LabeledDropdown(
-                    "Dense weights",
+                    "稠密权重",
                     DenseWeights.values().map { it.label },
                     current.denseWeights.ordinal,
                     enabled = stream,
@@ -119,47 +114,44 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
 
                 ExperimentalGroup {
                     IntSetting(
-                        "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
-                        format = { if (it == 0) "off" else "$it" },
+                        "时序预取（层数）", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
+                        format = { if (it == 0) "关闭" else "$it" },
                         // Mutually exclusive with predictive prefetch: two predictors would speculate
                         // the same future twice, and the engine refuses the pair.
                         enabled = stream && cacheOn && !current.predictPrefetch && current.routeAhead == 0,
                     ) { onChange(current.copy(prefetchLayers = it)) }
                     Hint(
-                        "Bets a layer reuses the previous token's experts and reads them on idle lanes. " +
-                            "Needs the cache."
+                        "假设当前层会复用上一个 token 的专家，并在空闲通道提前读取；需要开启缓存。"
                     )
                     SwitchRow(
-                        "Predictive prefetch",
-                        "Runs the next layer's own router a layer early and prefetches what it names. " +
-                            "More accurate than the bet above, and replaces it. Needs the cache.",
+                        "预测式预取",
+                        "提前运行下一层自己的路由器，并预取它选中的专家；比简单猜测更准确，会替代上面的时序预取。需要开启缓存。",
                         current.predictPrefetch,
                         enabled = stream && cacheOn && current.prefetchLayers == 0 && current.routeAhead == 0,
                     ) { onChange(current.copy(predictPrefetch = it)) }
                     if (current.predictPrefetch) {
                         IntSetting(
-                            "Predicted misses to read ahead", AppSettings.PREDICT_SPEC_CHOICES,
+                            "预测缺失专家的提前读取数量", AppSettings.PREDICT_SPEC_CHOICES,
                             current.predictSpecMax,
-                            format = { if (it == 0) "retention only" else "$it" },
+                            format = { if (it == 0) "仅保留" else "$it" },
                             enabled = stream && cacheOn,
                         ) { onChange(current.copy(predictSpecMax = it)) }
                         Hint(
-                            "Retention only reads nothing and just protects what the prediction names, " +
-                                "which is the safe setting: reading ahead competes with the token now."
+                            "仅保留模式不会读取数据，只保护预测到的专家不被驱逐；这是更安全的设置，因为提前读取会和当前 token 争抢 I/O。"
                         )
                     }
                 }
             }
 
-            Section("Speed / quality") {
+            Section("速度 / 质量") {
                 IntSetting(
-                    "Drop cold experts (% of even share)", AppSettings.DROP_COLD_CHOICES, current.dropColdPct,
+                    "丢弃冷专家（均分比例）", AppSettings.DROP_COLD_CHOICES, current.dropColdPct,
                     format = {
                         when (it) {
-                            0 -> "off"
-                            50 -> "50% (barely bites)"
-                            75 -> "75% (recommended)"
-                            100 -> "100% (fastest, roughest)"
+                            0 -> "关闭"
+                            50 -> "50%（影响较小）"
+                            75 -> "75%（推荐）"
+                            100 -> "100%（最快，质量损失最大）"
                             else -> "$it%"
                         }
                     },
@@ -167,107 +159,90 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     enabled = stream && cacheOn,
                 ) { onChange(current.copy(dropColdPct = it)) }
                 Hint(
-                    "Skips a routed expert only when it is a cache miss and the router barely wanted " +
-                        "it, so quality is spent only where it buys a read. A resident expert always " +
-                        "runs and the top one is never dropped. Changes the reply, and not the same " +
-                        "way twice: it depends on what the cache held."
+                    "只有当路由到的专家不在缓存中，且路由器对它的偏好很低时才跳过；质量损失只发生在需要闪存读取的地方。常驻专家始终执行，最高权重的专家不会被丢弃。该设置会改变回答，而且结果取决于缓存当时的内容。"
                 )
                 // The threshold is a share of the even split, so a narrow routing changes what the
                 // same percentage means. Only shown once a model reports its width.
                 val topk = ui.nExpertUsed
                 if (current.dropColdPct > 0 && topk != null && topk in 1..4) {
                     Text(
-                        "This model routes very few experts per token, so the same share covers much " +
-                            "more of the reply. Check the answers, or turn this off here.",
+                        "该模型每个 token 路由的专家很少，因此相同比例会影响更多输出。请检查回答，或在此关闭该选项。",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
                     )
                 }
                 IntSetting(
-                    "Active experts (top-k)", AppSettings.N_EXPERT_CHOICES, current.nExpertUsed,
-                    format = { if (it == 0) "model default" else "$it" },
+                    "活动专家数（top-k）", AppSettings.N_EXPERT_CHOICES, current.nExpertUsed,
+                    format = { if (it == 0) "模型默认" else "$it" },
                 ) { onChange(current.copy(nExpertUsed = it)) }
                 Hint(
-                    "Consult fewer experts per token than the model asks for. Cuts compute and reads " +
-                        "together, and changes the reply."
+                    "每个 token 使用的专家少于模型原本请求的数量，同时减少计算和读取，但会改变回答。"
                 )
 
                 ExperimentalGroup {
                     LabeledDropdown(
-                        "Guess ahead",
-                        listOf("Off", "Model's own head (MTP)", "Repeated text (n-gram)"),
+                        "提前猜测",
+                        listOf("关闭", "模型自带预测头（MTP）", "重复文本（n-gram）"),
                         AppSettings.SPEC_CHOICES.indexOf(current.spec).coerceAtLeast(0),
                         // Excluded by route-ahead, which declines to commit across a wider verify
                         // pass while still paying for its prediction.
                         enabled = current.routeAhead == 0,
                     ) { onChange(current.copy(spec = AppSettings.SPEC_CHOICES[it])) }
                     Hint(
-                        "Draft the next few tokens, verify the group in one decode, keep only what the " +
-                            "model would have produced. Lossless. Wins by reading the weights once for " +
-                            "several tokens, loses when the wider verify makes each layer touch more " +
-                            "experts. The head is accurate but only some models carry it; the n-gram " +
-                            "lookup is free and works on any model, but only fires on repeated text."
+                        "先草拟接下来的 token，再一次性验证，只保留模型本来会输出的内容。无损，但更宽的验证会让每层触碰更多专家；预测头只在部分模型可用，n-gram 查找免费且适用于所有模型，但只在文本重复时生效。"
                     )
                     if (current.spec != AppSettings.SPEC_OFF) {
                         IntSetting(
-                            "Tokens guessed per pass", AppSettings.MTP_DRAFT_CHOICES, current.mtpDraft,
+                            "每轮猜测 token 数", AppSettings.MTP_DRAFT_CHOICES, current.mtpDraft,
                         ) { onChange(current.copy(mtpDraft = it)) }
                         Hint(
-                            "Wider means more tokens per decode, but drafts get less reliable and a " +
-                                "rejected one is paid for anyway. The best value is rarely the largest."
+                            "每轮猜得越多，单次解码处理的 token 越多，但草稿可靠性会下降，错误草稿仍然需要付出成本；最佳值通常不是最大值。"
                         )
                     }
                     if (current.spec == AppSettings.SPEC_MTP) {
                         IntSetting(
-                            "Guess only when confident", AppSettings.MTP_P_MIN_CHOICES, current.mtpPMinPct,
-                            format = { if (it == 0) "always draft" else "above $it%" },
+                            "仅在有把握时猜测", AppSettings.MTP_P_MIN_CHOICES, current.mtpPMinPct,
+                            format = { if (it == 0) "始终猜测" else "$it%以上" },
                         ) { onChange(current.copy(mtpPMinPct = it)) }
                         Hint(
-                            "Stop drafting once the head is unsure. A draft not made keeps the verify " +
-                                "batch narrow, so fewer experts are read."
+                            "预测头不确定时停止草拟。没有草拟就能保持验证批次更窄，从而减少读取的专家数量。"
                         )
                     }
                     IntSetting(
-                        "Route-ahead (layers)", AppSettings.ROUTE_AHEAD_CHOICES, current.routeAhead,
-                        format = { if (it == 0) "off" else "$it" },
+                        "提前路由（层数）", AppSettings.ROUTE_AHEAD_CHOICES, current.routeAhead,
+                        format = { if (it == 0) "关闭" else "$it" },
                         // Excludes both prefetchers and speculation; needs the streamer, and the cache
                         // is what turns a committed selection into early reads.
                         enabled = stream && current.prefetchLayers == 0 && !current.predictPrefetch &&
                             current.spec == AppSettings.SPEC_OFF,
                     ) { onChange(current.copy(routeAhead = it)) }
                     Hint(
-                        "Commits each layer's routing that many layers early, so its reads start early " +
-                            "and can never be wasted. Lossy: some slots route differently. Excludes the " +
-                            "prefetchers and Guess ahead."
+                        "提前提交每层路由，让专家更早开始读取且不会浪费读取结果。该设置有损，部分槽位会改变路由；不能和预取、提前猜测同时使用。"
                     )
                 }
             }
 
-            Section("Compute") {
-                IntSetting("Compute threads", AppSettings.THREAD_CHOICES, current.threads) {
+            Section("计算") {
+                IntSetting("计算线程", AppSettings.THREAD_CHOICES, current.threads) {
                     onChange(current.copy(threads = it))
                 }
-                IntSetting("Tokens to generate", AppSettings.NPREDICT_CHOICES, current.nPredict) {
+                IntSetting("生成 token 数", AppSettings.NPREDICT_CHOICES, current.nPredict) {
                     onChange(current.copy(nPredict = it))
                 }
-                IntSetting("Context (tokens)", AppSettings.CTX_CHOICES, current.sessionCtx) {
+                IntSetting("上下文（token）", AppSettings.CTX_CHOICES, current.sessionCtx) {
                     onChange(current.copy(sessionCtx = it))
                 }
                 Hint(
-                    "Prompt plus reply the session can hold. Also memory: the KV cache is sized for it " +
-                        "at open, and on a model that fills RAM that comes out of the expert cache. " +
-                        "Changing it reopens the session."
+                    "会话可以容纳的提示词和回答长度，也决定 KV cache 的内存大小。对于已经占满内存的模型，缩短上下文会把空间让给专家缓存和稠密权重。修改后会重新打开会话。"
                 )
             }
 
-            Section("Prompt") {
+            Section("提示词") {
                 SwitchRow(
-                    "Thinking",
+                    "思考",
                     if (thinkingLocked)
-                        "This model always reasons and offers no way to turn it off, so the switch is " +
-                            "disabled rather than ignored. Its reasoning still shows above the reply."
+                        "该模型始终进行思考且没有关闭方式，因此开关会被禁用而不是假装生效。思考内容仍会显示在回答上方。"
                     else
-                        "Let a reasoning model think first; its reasoning shows in a block above the " +
-                            "reply. No effect on models that do not reason.",
+                        "让支持思考的模型先进行推理，推理内容会显示在回答上方。不支持思考的模型不受影响。",
                     // Locked reads ON, not OFF: the model reasons on every turn, and that is what
                     // the switch should be showing whatever the stored preference says.
                     checked = current.thinking || thinkingLocked,
@@ -275,11 +250,10 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 ) { onChange(current.copy(thinking = it)) }
             }
 
-            Section("Diagnostics") {
+            Section("诊断") {
                 SwitchRow(
-                    "Metrics CSV",
-                    "One CSV per session: per-token timings, faults, cache budget and where memory sat. " +
-                        "Takes effect on the next session; share it from the menu.",
+                    "指标 CSV",
+                    "每个会话生成一个 CSV，记录每 token 的耗时、缺页、缓存预算和内存驻留位置。下次会话生效，可从菜单分享。",
                     current.metricsCsv,
                 ) { onChange(current.copy(metricsCsv = it)) }
             }

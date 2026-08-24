@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -60,21 +61,38 @@ fun AgentScreen(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val coordinator = remember(scope) { NetworkAgentCoordinator(scope) }
     val ui by RunBus.state.collectAsStateWithLifecycle()
-    var request by rememberSaveable { mutableStateOf("请自动检查当前网络状态，并用中文给出最可能的原因和下一步建议。") }
+    var request by rememberSaveable { mutableStateOf("") }
     var selectedLog by rememberSaveable { mutableStateOf("") }
     var systemMessage by rememberSaveable { mutableStateOf(AgentPreferences.load(context)) }
     var savedSystemMessage by rememberSaveable { mutableStateOf(systemMessage) }
     var reasoningEffort by rememberSaveable { mutableStateOf("medium") }
     var outputTokensText by rememberSaveable { mutableStateOf("256") }
-    val allowedTools = ToolkitCatalog.toolsFor(toolkitIds, selectedLog.isNotBlank())
+    var policy by remember { mutableStateOf(AgentRunPreferences.load(context)) }
+    var protocol by remember { mutableStateOf(AgentRunPreferences.loadProtocol(context)) }
+    var goal by rememberSaveable { mutableStateOf("") }
+    var knownFacts by rememberSaveable { mutableStateOf("") }
+    var constraints by rememberSaveable { mutableStateOf("") }
+    var outputFormat by rememberSaveable { mutableStateOf("") }
+    var savedTemplates by remember { mutableStateOf(AgentRunPreferences.loadTemplates(context)) }
+    fun savePolicy(next: AgentPolicy) {
+        policy = next
+        AgentRunPreferences.save(context, next)
+    }
+
+    fun saveProtocol(next: AgentProtocolProfile) {
+        protocol = next
+        AgentRunPreferences.saveProtocol(context, next)
+    }
+
+    val allowedTools = policy.filterTools(ToolkitCatalog.toolsFor(toolkitIds, selectedLog.isNotBlank()))
     val selected = models.getOrNull(modelIdx.coerceIn(0, (models.size - 1).coerceAtLeast(0)))
     val listState = rememberLazyListState()
     val outputTokens = outputTokensText.toIntOrNull()
-    val templates = listOf(
-        "网络无法访问" to "请检查当前网络状态，并判断是连接、DNS、HTTPS 还是服务端问题。请列出事实、可能原因、置信度和下一步。",
-        "模型生成很慢" to "请观察当前模型的生成速度、缓存、I/O、内存和温度，判断瓶颈并给出一个安全建议。",
-        "设备发热" to "请检查当前设备的电池、热状态、系统内存、进程内存和屏幕状态，指出可能的风险。",
-        "检查模型空间" to "请查看本地模型目录、应用存储和进程内存，说明空间是否可能影响加载。",
+    val quickTemplates = listOf(
+        "列出应用文件" to "请列出当前应用可见的文件。",
+        "查看本地模型" to "请查看当前应用发现的本地模型及其大小。",
+        "检查设备状态" to "请检查当前设备状态，并指出需要注意的项目。",
+        "总结粘贴内容" to "请读取我粘贴的内容并给出简明总结。",
     )
 
     DisposableEffect(coordinator, context) {
@@ -117,10 +135,10 @@ fun AgentScreen(
                     else "已启用 ${toolkitIds.size} 个工具集，开始后每次读取都会在下方显示。",
                     color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text("选择模型并点击开始诊断。模型、工具调用和结果都留在设备上。", fontSize = 13.sp)
+                Text("选择模型并输入任务，然后点击开始。模型、工具调用和结果都留在设备上。", fontSize = 13.sp)
                 Text(
-                    if (allowedTools.isEmpty()) "当前没有可用观测工具，Agent 不会读取设备或网络数据。"
-                    else "日志工具仅在粘贴内容后才会授权。",
+                    if (allowedTools.isEmpty()) "当前没有可用工具，Agent 只会基于任务内容回答。"
+                    else "当前可用工具会按工具集和策略注入；未配置的任务上下文不会自动添加。",
                     fontSize = 12.sp,
                     color = androidx.compose.material3.MaterialTheme.colorScheme.tertiary,
                 )
@@ -140,12 +158,26 @@ fun AgentScreen(
                     )
                 }
                 LabeledDropdown(
-                    label = "GPT-OSS 推理强度",
-                    options = listOf("low", "medium", "high"),
-                    selected = listOf("low", "medium", "high").indexOf(reasoningEffort).coerceAtLeast(0),
+                    label = "模型协议",
+                    options = AgentProtocolProfile.values().map { it.label },
+                    selected = AgentProtocolProfile.values().indexOf(protocol).coerceAtLeast(0),
                     enabled = !ui.busy && !ui.agentActive,
-                    onSelect = { reasoningEffort = listOf("low", "medium", "high")[it] },
+                    onSelect = { saveProtocol(AgentProtocolProfile.values()[it]) },
                 )
+                Text(
+                    protocol.description,
+                    fontSize = 12.sp,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (protocol == AgentProtocolProfile.GPT_OSS) {
+                    LabeledDropdown(
+                        label = "GPT-OSS 推理强度",
+                        options = listOf("low", "medium", "high"),
+                        selected = listOf("low", "medium", "high").indexOf(reasoningEffort).coerceAtLeast(0),
+                        enabled = !ui.busy && !ui.agentActive,
+                        onSelect = { reasoningEffort = listOf("low", "medium", "high")[it] },
+                    )
+                }
                 OutlinedTextField(
                     value = outputTokensText,
                     onValueChange = { value ->
@@ -162,13 +194,161 @@ fun AgentScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
+                LabeledDropdown(
+                    label = "Agent 模式",
+                    options = AgentMode.values().map { it.label },
+                    selected = AgentMode.values().indexOf(policy.mode).coerceAtLeast(0),
+                    enabled = !ui.busy && !ui.agentActive,
+                    onSelect = { index ->
+                        val mode = AgentMode.values()[index]
+                        savePolicy(policy.copy(mode = mode, maxRounds = mode.defaultRounds))
+                    },
+                )
+                Text(
+                    policy.mode.description,
+                    fontSize = 12.sp,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LabeledDropdown(
+                    label = "工具调用上限",
+                    options = (1..5).map { "$it" },
+                    selected = (policy.maxRounds - 1).coerceIn(0, 4),
+                    enabled = !ui.busy && !ui.agentActive && policy.mode != AgentMode.ANSWER_ONLY,
+                    onSelect = { savePolicy(policy.copy(maxRounds = it + 1)) },
+                )
+                SwitchRow(
+                    label = "首轮强制调用工具",
+                    description = if (policy.requireInitialToolCall)
+                        "已开启：首轮必须先调用一个已启用工具，才能形成任务依据。"
+                    else
+                        "已关闭：模型可以直接回答；需要当前或本地信息时再调用工具。",
+                    checked = policy.requireInitialToolCall,
+                    enabled = !ui.busy && !ui.agentActive && policy.mode != AgentMode.ANSWER_ONLY,
+                    onChange = { savePolicy(policy.copy(requireInitialToolCall = it)) },
+                )
+                LabeledDropdown(
+                    label = "并行只读调用上限",
+                    options = listOf("1（串行）", "2（最多两项）"),
+                    selected = (policy.maxParallel - 1).coerceIn(0, 1),
+                    enabled = !ui.busy && !ui.agentActive && policy.mode != AgentMode.ANSWER_ONLY,
+                    onSelect = { savePolicy(policy.copy(maxParallel = it + 1)) },
+                )
+                Text(
+                    "并行只读调用只适用于彼此独立的工具；脚本、文件、日志和搜索始终不会并行。",
+                    fontSize = 11.sp,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SwitchRow(
+                    label = "允许网络工具",
+                    description = "允许已注册的网络工具；未选择网络工具时不产生影响。",
+                    checked = policy.allowNetwork,
+                    enabled = !ui.busy && !ui.agentActive,
+                    onChange = { savePolicy(policy.copy(allowNetwork = it)) },
+                )
+                SwitchRow(
+                    label = "允许公开搜索工具",
+                    description = "允许已注册的公开搜索工具；没有搜索工具时忽略。",
+                    checked = policy.allowWebSearch,
+                    enabled = !ui.busy && !ui.agentActive && policy.allowNetwork,
+                    onChange = { savePolicy(policy.copy(allowWebSearch = it)) },
+                )
+                SwitchRow(
+                    label = "允许日志与文件工具",
+                    description = "允许已注册的日志和文件工具；没有这类工具时忽略。",
+                    checked = policy.allowLogs,
+                    enabled = !ui.busy && !ui.agentActive,
+                    onChange = { savePolicy(policy.copy(allowLogs = it)) },
+                )
+                SwitchRow(
+                    label = "执行前确认计划",
+                    description = "开始任务前先显示本次目标、工具范围和预计轮次。",
+                    checked = policy.confirmPlan || policy.mode == AgentMode.DEEP,
+                    enabled = !ui.busy && !ui.agentActive && policy.mode != AgentMode.ANSWER_ONLY,
+                    onChange = { savePolicy(policy.copy(confirmPlan = it)) },
+                )
             }
             item {
+                val allTemplates = AgentRunPreferences.builtInTemplates + savedTemplates
+                if (allTemplates.isNotEmpty()) {
+                    LabeledDropdown(
+                        label = "任务模板",
+                        options = listOf("当前配置") + allTemplates.map { it.name },
+                        selected = 0,
+                        enabled = !ui.busy && !ui.agentActive,
+                        onSelect = { index ->
+                            allTemplates.getOrNull(index - 1)?.let { template ->
+                                goal = template.config.context.goal
+                                knownFacts = template.config.context.knownFacts
+                                constraints = template.config.context.constraints
+                                outputFormat = template.config.context.outputFormat
+                                savePolicy(template.config.policy)
+                                saveProtocol(template.config.protocol)
+                            }
+                        },
+                    )
+                }
+                OutlinedTextField(
+                    value = goal,
+                    onValueChange = { goal = it.take(8 * 1024) },
+                    label = { Text("任务目标（可选）") },
+                    supportingText = { Text("留空时直接使用任务内容。") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                )
+                OutlinedTextField(
+                    value = knownFacts,
+                    onValueChange = { knownFacts = it.take(8 * 1024) },
+                    label = { Text("已知信息（可选）") },
+                    supportingText = { Text("留空时不添加额外背景；填写内容会作为不可信用户数据提供给模型。") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                )
+                OutlinedTextField(
+                    value = constraints,
+                    onValueChange = { constraints = it.take(4 * 1024) },
+                    label = { Text("限制条件（可选）") },
+                    supportingText = { Text("留空时不添加额外限制。") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                )
+                OutlinedTextField(
+                    value = outputFormat,
+                    onValueChange = { outputFormat = it.take(2 * 1024) },
+                    label = { Text("输出格式（可选）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 1,
+                    maxLines = 3,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+val name = "任务模板 ${savedTemplates.size + 1}"
+val saved = (savedTemplates + AgentTemplate(
+                                name,
+                                AgentRunConfig(AgentContext(goal, knownFacts, constraints, outputFormat), policy, protocol),
+                            )).takeLast(12)
+savedTemplates = saved
+AgentRunPreferences.saveTemplates(context, saved)
+                        },
+                        enabled = !ui.busy && !ui.agentActive && goal.isNotBlank(),
+                    ) { Text("保存为模板") }
+                    TextButton(
+                        onClick = {
+                            goal = ""
+                            knownFacts = ""
+                            constraints = ""
+                            outputFormat = ""
+                        },
+                    ) { Text("清空上下文") }
+                }
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    templates.forEach { (label, value) ->
+                    quickTemplates.forEach { (label, value) ->
                         androidx.compose.material3.AssistChip(
                             onClick = { request = value },
                             label = { Text(label, maxLines = 1, softWrap = false) },
@@ -229,12 +409,17 @@ fun AgentScreen(
                                 coordinator.start(
                                     context, it, settings, request, selectedLog, allowedTools, normalized,
                                     reasoningEffort, outputTokens ?: 256,
+                                    AgentRunConfig(
+                                        AgentContext(goal, knownFacts, constraints, outputFormat),
+                                        policy,
+                                        protocol,
+                                    ),
                                 )
                             }
                         },
-                        enabled = selected != null && outputTokens != null && outputTokens > 0 && !ui.busy && !ui.agentActive,
+                        enabled = selected != null && request.isNotBlank() && outputTokens != null && outputTokens > 0 && !ui.busy && !ui.agentActive,
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text(if (ui.agentTranscript.isEmpty()) "开始诊断" else "重新诊断") }
+                    ) { Text(if (ui.agentTranscript.isEmpty()) "开始任务" else "重新执行") }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(
                             onClick = {
@@ -263,6 +448,11 @@ fun AgentScreen(
                             modifier = Modifier.weight(1f),
                         ) { Text("清除结果") }
                         TextButton(
+                            onClick = { if (ui.agentPaused) coordinator.resume() else coordinator.pause() },
+                            enabled = ui.agentActive && !ui.agentAwaitingPlan,
+                            modifier = Modifier.weight(1f),
+                        ) { Text(if (ui.agentPaused) "继续" else "暂停") }
+                        TextButton(
                             onClick = {
                                 coordinator.cancel()
                                 context.startService(Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL))
@@ -270,6 +460,27 @@ fun AgentScreen(
                             enabled = ui.agentActive || ui.generating || ui.loading,
                             modifier = Modifier.weight(1f),
                         ) { Text("停止") }
+                    }
+                }
+            }
+            if (ui.agentAwaitingPlan) {
+                item {
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("任务计划待确认", fontWeight = FontWeight.Bold)
+                            ui.agentPlan?.let { plan ->
+                                Text("目标：${plan.objective}", fontSize = 13.sp)
+                                Text("预计最多 ${plan.maxRounds} 轮；工具 ${plan.tools.size} 个", fontSize = 12.sp)
+                                plan.tools.forEach { tool ->
+                                    Text("• ${ToolkitCatalog.toolTitle(tool)}：${ToolkitCatalog.toolSummary(tool)}", fontSize = 12.sp)
+                                }
+                            }
+                            Text("计划只显示已通过本地权限过滤的工具；批准后仍会逐次重新校验参数。", fontSize = 11.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { coordinator.approvePlan(true) }) { Text("批准执行") }
+                                TextButton(onClick = { coordinator.approvePlan(false) }) { Text("拒绝") }
+                            }
+                        }
                     }
                 }
             }
@@ -294,17 +505,12 @@ fun AgentScreen(
 
 @Composable
 private fun AgentObservationCard(ui: UiState) {
-    val tokenListState = rememberLazyListState()
+    val visibleTokens = ui.agentTokens.takeLast(16)
     var clockTick by remember { mutableStateOf(0L) }
     LaunchedEffect(ui.agentActive, ui.agentRunId) {
         while (ui.agentActive) {
             delay(500L)
             clockTick += 1L
-        }
-    }
-    LaunchedEffect(ui.agentTokens.size, ui.agentActive) {
-        if (ui.agentActive && ui.agentTokens.isNotEmpty()) {
-            tokenListState.scrollToItem(ui.agentTokens.lastIndex)
         }
     }
     val now = maxOf(SystemClock.elapsedRealtime(), ui.agentRunStartedAtMs + clockTick * 500L)
@@ -394,17 +600,13 @@ private fun AgentObservationCard(ui: UiState) {
 
             if (ui.agentTokens.isNotEmpty()) {
                 androidx.compose.material3.HorizontalDivider()
-                Text("Token 明细（最近 ${ui.agentTokens.size} 条）", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Token 明细（最近 ${visibleTokens.size} 条）", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 if (ui.agentTokensDropped > 0) {
                     Text("已保留最新 token；早期丢弃 ${ui.agentTokensDropped} 条。", fontSize = 11.sp,
                         color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                LazyColumn(
-                    state = tokenListState,
-                    modifier = Modifier.fillMaxWidth().height(300.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    items(ui.agentTokens, key = { it.ordinal }) { token ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    visibleTokens.forEach { token ->
                         androidx.compose.material3.Surface(
                             color = androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant,
                             shape = androidx.compose.material3.MaterialTheme.shapes.small,

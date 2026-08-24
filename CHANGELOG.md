@@ -4,6 +4,74 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.21.14] - 2026-08-24
+
+### Added
+- **Explicit Agent protocol profiles.** GPT-OSS and Qwen now have separately selectable, persisted and
+  visible protocol configurations. The selected profile controls the instruction role, native structured
+  path and thinking parameters; runtime behavior no longer infers these settings from model filenames.
+  User templates preserve their selected protocol profile. App version 0.21.14 (versionCode 50).
+
+## [0.21.13] - 2026-08-24
+
+### Changed
+- **General-purpose Agent configuration.** Removed the network-analysis task from the default Agent
+  request and replaced network-specific instructions and labels with task-neutral behavior. Empty goal,
+  known-information, constraints and output-format fields are now omitted from prompts instead of being
+  replaced by default diagnostic text. The native Qwen path no longer forces thinking for Qwen models,
+  preventing raw truncated reasoning from being presented as a task answer. App version 0.21.13 (versionCode 49).
+
+## [0.21.12] - 2026-08-24
+
+### Added
+- **Configurable Agent workspace.** Added Quick, Deep and Answer-only modes; editable objective,
+  known facts, constraints and output format; persisted capability policy; built-in and user-saved
+  diagnostic templates; and a reviewable plan before Deep or explicitly approved runs.
+- **Agent control and concurrency.** Runs can pause at model/tool boundaries and continue later. Native
+  structured tool arrays can execute up to two registered independent read-only observations in parallel,
+  with deterministic tool-result ordering and per-call audit records. The app still keeps the model/session
+  owner in `RunService` and the executor as the final registry boundary. App version 0.21.12 (versionCode 48).
+
+## [0.21.11] - 2026-08-24
+
+### Changed
+- **Optional first-turn evidence requirement.** Agent no longer rejects a direct first answer by default.
+  The Agent workspace now exposes a persisted `首轮强制调用工具` switch: when enabled, the first
+  native turn uses required tool choice and reports a clear error if no enabled tool is called; when
+  disabled, the model may answer directly and can call tools when fresh evidence is needed. App version
+  0.21.11 (versionCode 47).
+
+## [0.21.10] - 2026-08-24
+
+### Fixed
+- **Qwen3.6 Agent recovery.** If a first structured-template request is rejected by the model session
+  as `empty prompt after tokenization`, Android retries once through the same GGUF chat template with
+  the visible user request and tool schemas. This keeps Qwen3.6 usable without overriding its embedded
+  template or modifying llama.cpp.
+- **Unbounded Agent duration.** Removed the five-round wall-clock guard's former three-minute timeout.
+  Tool-specific network, HTTPS and script timeouts remain in place, and the user can still stop a run.
+- **Navigation and settings localization.** System back now returns from Compose pages instead of
+  exiting the app, and the settings surface is localized in Chinese. App version 0.21.10 (versionCode 46).
+
+## [0.21.9] - 2026-08-22
+
+### Fixed
+- **Unified Agent tool contract.** GPT-OSS structured arrays, Qwen XML calls and the legacy JSON
+  fallback now pass through one canonical invocation parser. A model-emitted call that cannot be
+  parsed or is disabled is reported as unexecuted instead of silently becoming an answer.
+- **Tool result acknowledgement.** Every executed tool now returns a `bmoe.tool_result.v1` envelope
+  with explicit `status`, tool name and payload; empty results become a structured error that is
+  sent back to the model and shown in the Agent UI. App version 0.21.9 (versionCode 45).
+
+## [0.21.8] - 2026-08-22
+
+### Added
+- **Native Qwen tool templates.** Qwen2/Qwen3/Qwen3.5 Agent turns now use the model's structured
+  tool-call template and OpenAI-compatible `assistant`/`tool` messages, matching the existing
+  GPT-OSS path. Qwen uses a `system` instruction role because its templates do not accept the
+  GPT-OSS `developer` role. The legacy bounded JSON fallback remains for other architectures.
+  App version 0.21.8 (versionCode 44).
+
 ## [0.21.7] - 2026-08-22
 
 ### Added

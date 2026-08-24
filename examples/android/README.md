@@ -23,30 +23,46 @@ differs.
 
 The Agent has a free-form per-model-turn output-token budget (default 256). The native session clamps
 that request after tokenizing the rendered prompt, so a large value is safe: it uses only the context
-room that remains after the prompt. GPT-OSS models use their native Harmony message/template path: the
-saved Agent message is a developer instruction, the console exposes Harmony reasoning effort (`low`,
-`medium`, `high`), enabled tools are passed as function schemas, and tool results return as structured
-tool messages. The first native Agent turn requires one enabled function call to establish evidence;
-later turns use `auto` so the model can finish after the evidence is sufficient. If the first turn
-does not produce a valid native call, the Agent reports a missing tool call instead of accepting an
-unsupported free-form conclusion. Other architectures keep the bounded JSON prompt fallback. If a
-model still emits a reasoning wrapper, the app extracts only a strictly validated tool object and
+room that remains after the prompt. GPT-OSS models use their native Harmony message/template path, while
+Qwen2/Qwen3/Qwen3.5 models use their native Qwen tool template. The saved Agent message is a developer
+instruction for GPT-OSS and a system instruction for Qwen, the console exposes Harmony reasoning effort
+(`low`, `medium`, `high`), enabled tools are passed as function schemas, and tool results return as structured
+messages using the shared `bmoe.tool_result.v1` envelope. GPT-OSS arrays, Qwen XML calls and the legacy
+JSON fallback all normalize into the same executor contract. If a model emits an unparsable or disabled
+call, it is reported as unexecuted; an empty tool return becomes an explicit error result instead of
+being silently treated as a successful turn.
+The Agent workspace includes a persisted `首轮强制调用工具` switch. When enabled, the first native
+turn requires one enabled function call to establish evidence; when disabled, the model may answer
+directly and call a tool only when fresh device evidence is needed. Later turns use `auto` so the model
+can finish after the evidence is sufficient. Other architectures keep the bounded JSON prompt fallback.
+If a model still emits a reasoning wrapper, the app extracts only a strictly validated tool object and
 removes complete or truncated reasoning from the visible answer.
- Open **工具集** first to compose a scenario from the Network diagnostics, Device exploration, Log analysis, Performance observation, Model catalog, Web search and Script execution groups. The choice is stored locally and only selected tools are described to the model or accepted by the registry. Choose a loaded model, review the task and press **开始诊断**; merely opening the workspace never starts inference or a network observation. Agent turns use a separate transcript from ordinary chat. The agent page keeps the injected tool list and prompt preview visible, with raw JSON expandable only when inspecting details. The existing chat screen also retains an opt-in **Network analysis** switch. It is a bounded foreground workflow,
-not a general Android agent: the already-loaded `bmoe-cli --session` remains the only inference
-owner, so the model and MoE expert cache remain warm across its model → tool → model turns. The app
-never starts a gateway, scheduler or background shell process for this feature. Script execution is off
-by default; when explicitly enabled, `run_script` runs in the app's private files directory with a
-bounded timeout and output size.
+The Agent workspace supports **快速任务**, **深入任务** and **仅回答** modes, plus an explicit **GPT-OSS**
+or **Qwen** protocol profile. The profile is saved and shown independently of the selected model file;
+GPT-OSS uses its developer-role/reasoning configuration and Qwen uses its system-role/template behavior.
+Objective, known information, constraints and output format are optional per run; empty fields are omitted
+from the model prompt. Policy controls tool rounds, parallel read-only calls, capability groups and
+first-turn evidence. Built-in network, performance and device templates remain available as explicit
+selections, while user templates retain their selected protocol profile.
+
+The choice of toolkits is stored locally; only selected tools that pass the Agent policy are described to
+the model or accepted by the registry. Choose a loaded model, review the task and press **开始任务**;
+merely opening the workspace never starts inference or a tool. Agent turns use a separate transcript,
+with injected tools, plan state, evidence and raw JSON details visible in the workspace. The existing chat
+screen also retains an opt-in tool mode. It is a bounded foreground workflow: the already-loaded
+`bmoe-cli --session` remains the only inference owner, so the model and MoE expert cache remain warm
+across its model → tool → model turns. The app never starts a gateway, scheduler or background shell
+process for this feature. Script execution is available only when explicitly enabled and runs in the app's
+private files directory with a bounded timeout and output size.
 
 The Agent workspace also accepts an optional user-authored **SystemMessage**. It is stored in the
 app's local preferences, can be restored to the built-in rules, and is applied to later Agent turns.
 The app's safety rules and the selected tool definitions are appended after that message, so the
-tool contract remains visible and follows the configured SystemMessage. Starting a diagnosis saves
+tool contract remains visible and follows the configured SystemMessage. Starting a task saves
 the current editor value as well as the explicit save action.
 
-The model can request at most **five** of the currently enabled tools, one per turn, and every
-call plus its raw result remains visible in the chat UI. The optional Performance observation,
+The model can request at most **five** tool rounds and, when it emits independent registered observations,
+up to two may execute in parallel. Every call plus its raw result remains visible in the chat UI. The optional Performance observation,
 Model catalog and Web search groups add their own tools; disabling a group removes its tools
 from both the prompt and executor. Device exploration also exposes memory, process, thermal, display
 and application metadata; network diagnostics exposes capability and interface-address snapshots;

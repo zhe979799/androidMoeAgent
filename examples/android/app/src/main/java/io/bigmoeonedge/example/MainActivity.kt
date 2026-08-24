@@ -10,6 +10,7 @@ import android.os.Environment
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -107,7 +109,21 @@ private fun Root() {
     var toolkitIds by remember { mutableStateOf(ToolkitPreferences.load(context)) }
     var settings by remember { mutableStateOf(AppSettings.load(context)) }
 
-    // Model-scan state lives here, above the settings/main switch, so opening Settings and
+    val hasChildPage = showSettings || showMetrics || showAutotune || showAgent || showCommunity || showToolkits
+    BackHandler(enabled = hasChildPage) {
+        when {
+            showSettings -> showSettings = false
+            showMetrics -> showMetrics = false
+            showAutotune -> showAutotune = false
+            showAgent -> showAgent = false
+            showCommunity -> showCommunity = false
+            showToolkits -> {
+                toolkitIds = ToolkitPreferences.load(context)
+                showToolkits = false
+            }
+        }
+    }
+
     // coming back does NOT dispose it and trigger a fresh scan. The scan runs once (and again
     // only when refreshKey changes: an explicit Refresh, or after a download/import completes).
     var models by remember { mutableStateOf<List<File>>(emptyList()) }
@@ -245,10 +261,27 @@ private fun MainScreen(
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) followTail = atBottom }
     }
-    LaunchedEffect(total, ui.answer.length, ui.reasoning.length, followTail) {
-        // A long answer is taller than the viewport, so aligning the item's top would park the view
-        // on its beginning; the large offset pins the list to the newest text instead.
-        if (followTail && total > 1) runCatching { listState.scrollToItem(total - 1, Int.MAX_VALUE) }
+    // Streaming can update the answer once per token. Limit follow-tail work to roughly 12 frames
+    // per second so a fast generation never turns scrolling into a command queue.
+    LaunchedEffect(followTail) {
+        var lastScrollNanos = 0L
+        snapshotFlow {
+            Triple(
+                1 + ui.transcript.size + if (!ui.agentActive && (ui.answer.isNotEmpty() || ui.reasoning.isNotEmpty())) 1 else 0,
+                ui.answer.length,
+                ui.reasoning.length,
+            )
+        }.collect { state ->
+            val currentTotal = state.first
+            if (!followTail || currentTotal <= 1) return@collect
+            val now = System.nanoTime()
+            val waitNanos = 80_000_000L - (now - lastScrollNanos)
+            if (waitNanos > 0) delay(waitNanos / 1_000_000L)
+            if (followTail) {
+                runCatching { listState.scrollToItem(currentTotal - 1, Int.MAX_VALUE) }
+                lastScrollNanos = System.nanoTime()
+            }
+        }
     }
 
     // adjustResize handles the legacy path; imePadding covers edge-to-edge (Android 15+), where the
@@ -320,8 +353,8 @@ private fun MainScreen(
                     }
 
                     SwitchRow(
-                        label = "网络分析",
-                        description = "仅在当前页面调用有限的只读诊断工具。",
+                        label = "工具模式",
+                        description = "在当前会话启用已授权的只读工具。",
                         checked = networkAnalysis,
                         enabled = !ui.busy && !ui.agentActive,
                         onChange = { networkAnalysis = it },
@@ -329,8 +362,8 @@ private fun MainScreen(
 
                     if (networkAnalysis) {
                         Text(
-                            if (allowedAgentTools.isEmpty()) "当前没有授权的观测工具，诊断只会基于模型知识。"
-                            else "本次授权 ${allowedAgentTools.size} 个只读工具；网络探测只在你点击 Diagnose 后执行。",
+                            if (allowedAgentTools.isEmpty()) "当前没有授权工具，任务只会基于模型知识回答。"
+                            else "本次授权 ${allowedAgentTools.size} 个只读工具；工具只在你点击运行后执行。",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.tertiary,
                         )
@@ -339,7 +372,7 @@ private fun MainScreen(
                     OutlinedTextField(
                         value = prompt,
                         onValueChange = { prompt = it },
-                        label = { Text(if (networkAnalysis) "Network problem" else "Prompt") },
+                        label = { Text(if (networkAnalysis) "Task" else "Prompt") },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2,
                     )
@@ -363,30 +396,29 @@ private fun MainScreen(
                                 focusManager.clearFocus()
                                 if (models.isNotEmpty()) {
                                     val selected = models[modelIdx.coerceIn(0, models.size - 1)]
-                                    val request = prompt.ifBlank {
-                                        if (networkAnalysis) "Why can this phone connect to Wi-Fi but not open a website?"
-                                        else "The capital of Japan is"
-                                    }
-                                    if (networkAnalysis) {
-                                        networkAgent.start(
-                                            context,
-                                            selected,
-                                            settings,
-                                            request,
-                                            selectedLog,
-                                            allowedAgentTools,
-                                        )
-                                    } else {
-                                        // First message of a conversation clears the KV; a follow-up continues it.
-                                        launchPrompt(context, selected, request, settings, ui.sessionSig,
-                                            clearKv = ui.transcript.isEmpty() || ui.clearKvOnNextPrompt)
+                                    val request = prompt.trim()
+                                    if (request.isNotBlank()) {
+                                        if (networkAnalysis) {
+                                            networkAgent.start(
+                                                context,
+                                                selected,
+                                                settings,
+                                                request,
+                                                selectedLog,
+                                                allowedAgentTools,
+                                            )
+                                        } else {
+                                            // First message of a conversation clears the KV; a follow-up continues it.
+                                            launchPrompt(context, selected, request, settings, ui.sessionSig,
+                                                clearKv = ui.transcript.isEmpty() || ui.clearKvOnNextPrompt)
+                                        }
                                     }
                                 }
                             },
                             enabled = !ui.busy && !ui.agentActive && models.isNotEmpty(),
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text(if (networkAnalysis) "Diagnose" else if (ui.transcript.isNotEmpty()) "Send" else if (ui.ready) "Send" else "Run")
+                            Text(if (networkAnalysis) "Run with tools" else if (ui.transcript.isNotEmpty()) "Send" else if (ui.ready) "Send" else "Run")
                         }
 
                         OutlinedButton(
@@ -538,9 +570,9 @@ fun AgentToolsCard(
                     Text("Agent 观测", fontWeight = FontWeight.Bold)
                     Text(
                         when {
-                            (ui?.agentRunId ?: 0L) > 0L -> "本次授权 ${ui?.agentAllowedTools?.size ?: 0} 个工具 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用 · 压缩 ${ui?.agentCompactions ?: 0} 次"
-                            toolkitIds.isNotEmpty() -> "已启用 ${toolkitIds.size} 个工具集 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
-                            else -> "未启用设备工具 · ${tools.size}/${NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
+                            (ui?.agentRunId ?: 0L) > 0L -> "本次授权 ${ui?.agentAllowedTools?.size ?: 0} 个工具 · ${tools.size}/${ui?.agentMaxRounds ?: NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用 · 压缩 ${ui?.agentCompactions ?: 0} 次"
+                            toolkitIds.isNotEmpty() -> "已启用 ${toolkitIds.size} 个工具集 · ${tools.size}/${ui?.agentMaxRounds ?: NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
+                            else -> "未启用设备工具 · ${tools.size}/${ui?.agentMaxRounds ?: NetworkAgentProtocol.MAX_TOOL_CALLS} 次调用"
                         },
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

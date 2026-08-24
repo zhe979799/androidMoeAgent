@@ -43,6 +43,8 @@ class RunService : Service() {
     @Volatile private var sessionModel: String = ""
     @Volatile private var activeInferenceLog: InferenceLog? = null
     @Volatile private var activeStructuredPrompt: String? = null
+    @Volatile private var activeRequest: Req? = null
+    @Volatile private var structuredPromptRetryUsed = false
     @Volatile private var shuttingDown = false
     // Bumped every time a new session process is (re)started. The runSession thread carries the
     // epoch it was launched with and only touches shared state (proc, RunBus, foreground) while it
@@ -334,6 +336,8 @@ class RunService : Service() {
             activeInferenceLog = null
             val expectedStructuredPrompt = activeStructuredPrompt
             activeStructuredPrompt = null
+            activeRequest = null
+            structuredPromptRetryUsed = false
             val loc = java.util.Locale.US
             val summary = buildString {
                 append(String.format(loc, "generation: %d tokens (%.2f tok/s)", tokens, tokS))
@@ -519,7 +523,27 @@ class RunService : Service() {
             RunBus.update { it.copy(state = EngineState.ERROR, error = msg) }
             shutdownSession()
         } else {
-            // Bad request (e.g. context overflow): the session stays loaded and usable.
+            val structuredRetry = activeRequest
+            if (!structuredPromptRetryUsed && structuredRetry?.messagesJson != null && structuredRetry.clearKv &&
+                msg.contains("empty prompt after tokenization", ignoreCase = true)
+            ) {
+                structuredPromptRetryUsed = true
+                val fallbackPrompt = structuredRetry.displayPrompt?.takeIf { it.isNotBlank() }
+                    ?: structuredRetry.prompt.takeIf { it.isNotBlank() }
+                if (fallbackPrompt != null) {
+                    sendGenerate(
+                        structuredRetry.copy(
+                            prompt = fallbackPrompt,
+                            messagesJson = null,
+                            displayPrompt = fallbackPrompt,
+                            clearKv = true,
+                        ),
+                        preserveStructuredRetry = true,
+                    )
+                    return
+                }
+            }
+            activeRequest = null
             RunBus.update { it.copy(state = EngineState.READY, error = msg) }
             main.post { notify("Model ready") }
             scheduleIdleUnload()
@@ -545,9 +569,11 @@ class RunService : Service() {
     // it unambiguously describes this generation until the next request can be accepted.
     @Volatile private var activeReqSuppressTranscript = false
 
-    private fun sendGenerate(req: Req) {
+    private fun sendGenerate(req: Req, preserveStructuredRetry: Boolean = false) {
         val id = nextId++
         activeReqSuppressTranscript = req.suppressTranscript
+        activeRequest = req
+        if (!preserveStructuredRetry) structuredPromptRetryUsed = false
         activeStructuredPrompt = req.messagesJson?.takeIf { it.isNotBlank() }?.let {
             req.displayPrompt ?: req.prompt
         }

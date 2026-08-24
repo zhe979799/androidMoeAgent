@@ -69,11 +69,15 @@ data class UiState(
     val agentTokensSeen: Int = 0,
     val agentTokensDropped: Int = 0,
     val agentRequestedTokens: Int = 256,
+    val agentMaxRounds: Int = NetworkAgentProtocol.MAX_TOOL_CALLS,
     val agentEffectiveTokens: Int = 0,
     val agentPromptTokens: Int = 0,
     val agentContextTokens: Int = 0,
     val agentContextUsedTokens: Int = 0,
     val agentBudgetClamped: Boolean = false,
+    val agentPlan: AgentPlan? = null,
+    val agentAwaitingPlan: Boolean = false,
+    val agentPaused: Boolean = false,
 ) {
     val loading get() = state == EngineState.LOADING
     val generating get() = state == EngineState.GENERATING
@@ -96,7 +100,12 @@ object RunBus {
             lastCompletedText = "", lastCompletedToolCalls = "[]", clearKvOnNextPrompt = false)
     }
 
-    fun resetAgentObservation(requestedTokens: Int, contextTokens: Int, nowMs: Long) = _state.update {
+    fun resetAgentObservation(
+        requestedTokens: Int,
+        contextTokens: Int,
+        nowMs: Long,
+        maxRounds: Int = NetworkAgentProtocol.MAX_TOOL_CALLS,
+    ) = _state.update {
         it.copy(
             agentRunStartedAtMs = nowMs,
             agentStages = emptyList(),
@@ -104,6 +113,7 @@ object RunBus {
             agentTokensSeen = 0,
             agentTokensDropped = 0,
             agentRequestedTokens = requestedTokens,
+            agentMaxRounds = maxRounds,
             agentEffectiveTokens = 0,
             agentPromptTokens = 0,
             agentContextTokens = contextTokens,
