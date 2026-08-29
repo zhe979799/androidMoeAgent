@@ -468,7 +468,7 @@ extends to them naturally.
 Requests (stdin):
 
 ```
-{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
+{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>,"raw_prompt":<bool>,"reuse_prompt_prefix":<bool>}
 {"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
 {"cmd":"close"}           # end the session (EOF on stdin does the same)
 ```
@@ -477,7 +477,10 @@ Requests (stdin):
 default to the process's flags / `true`. `clear_kv:true` starts a **new chat** (drops the KV and
 the engine-held conversation); `clear_kv:false` **continues** the conversation — send only the new
 user message, the engine re-renders the whole history and reuses the KV prefix (see
-[session.md](session.md)). `cancel` may arrive at any time, including mid-generation.
+[session.md](session.md)). For a caller-rendered native prompt, set `raw_prompt:true` and
+`reuse_prompt_prefix:true`; the engine compares the complete tokenized prompt with the current KV,
+rewinds any divergent tail and reports only the newly prefilled suffix in `n_prompt`. A failed partial
+rewind or prefill clears the KV and retries once. `cancel` may arrive at any time, including mid-generation.
 
 Responses (stdout):
 

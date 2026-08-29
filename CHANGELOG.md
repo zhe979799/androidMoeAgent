@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.21.17] - 2026-08-24
+
+### Added
+- **App-private CLI toolkit.** The Agent can optionally list, install, run and remove POSIX shell
+  commands under `files/bin`. Android 10+ prevents downloaded native code execution from writable app
+  storage, so the installer accepts only shebang scripts and `run_cli` invokes them through
+  `/system/bin/sh`. Installation requires HTTPS, a public host and an exact SHA-256 supplied by the
+  caller, limits artifacts to 64 MiB, and uses an atomic rename. The separate toolkit and install-
+  permission switches default to off; APKs, native binaries, system packages, root and system-directory
+  writes remain unsupported.
+
+### Fixed
+- **Normalize Qwen XML integer arguments.** Qwen's native XML renderer emits scalar parameter
+  values as text; the Agent now converts only schema-declared integer fields (`limit`, timeouts,
+  offsets and size limits) before validation, while preserving search queries, paths and scripts as
+  strings. This prevents valid Bing/Baidu/Exa calls from failing with `limit must be an integer`.
+- **Render Qwen tool turns in the native Qwen format.** Qwen Agent turns now use an explicit
+  Qwen3.6 prompt renderer and bypass only llama.cpp chat-template application; GGUF tokenization,
+  persistent session, KV cache and MoE streaming remain unchanged. Follow-up raw prompts explicitly
+  reuse their common token prefix, retry once after a full KV clear on prefill failure, and report only
+  the suffix in `n_prompt`. Qwen tool turns are capped at 256 tokens; final answers disable tools and
+  thinking, use a clean KV context with bounded evidence, and default to 1024 tokens. Non-Qwen protocols
+  keep the structured llama.cpp path. App version 0.21.17 (versionCode 53).
+
+## [0.21.16] - 2026-08-24
+
+### Fixed
+- **Preserve rejected Agent output.** When `首轮强制调用工具` is enabled but the model emits no
+  tool call, the generated text remains visible in the Agent transcript while the run is marked as
+  rejected instead of silently discarding the result. Qwen structured-prompt recovery now carries a
+  minimal tool requirement into its fallback prompt. App version 0.21.16 (versionCode 52).
+
+## [0.21.15] - 2026-08-24
+
+### Fixed
+- **Protocol-specific Agent instructions.** GPT-OSS and Qwen now keep separate user-authored
+  SystemMessage values. Switching the selected protocol loads only that profile's text, and saving or
+  clearing it cannot affect the other protocol. Legacy shared SystemMessage storage is ignored.
+  App version 0.21.15 (versionCode 51).
+
 ## [0.21.14] - 2026-08-24
 
 ### Added

@@ -1,15 +1,20 @@
 package io.bigmoeonedge.example
 
 import android.content.Context
+import java.util.Locale
 
-/** Persists the user-authored Agent system message without exposing it to other app features. */
+/** Persists one user-authored Agent system message per protocol profile. */
 object AgentPreferences {
     private const val PREFS = "agent_preferences"
     private const val SYSTEM_MESSAGE = "system_message"
     private const val REQUIRE_INITIAL_TOOL = "require_initial_tool"
-    fun load(context: Context): String = context
+
+    private fun systemMessageKey(profile: AgentProtocolProfile): String =
+        "${SYSTEM_MESSAGE}_${profile.name.lowercase(Locale.ROOT)}"
+
+    fun load(context: Context, profile: AgentProtocolProfile): String = context
         .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        .getString(SYSTEM_MESSAGE, "")
+        .getString(systemMessageKey(profile), "")
         .orEmpty()
 
     fun loadRequireInitialTool(context: Context): Boolean = context
@@ -26,10 +31,10 @@ object AgentPreferences {
 
     fun normalize(value: String): String = value.trim()
 
-    fun save(context: Context, value: String) {
+    fun save(context: Context, profile: AgentProtocolProfile, value: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
-            .putString(SYSTEM_MESSAGE, normalize(value))
+            .putString(systemMessageKey(profile), normalize(value))
             .apply()
     }
 }

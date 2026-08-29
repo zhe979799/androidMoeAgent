@@ -43,6 +43,7 @@ data class AgentPolicy(
     val allowWebSearch: Boolean = true,
     val allowLogs: Boolean = true,
     val allowScripts: Boolean = true,
+    val allowCliInstall: Boolean = false,
     val requireInitialToolCall: Boolean = false,
     val confirmPlan: Boolean = false,
 ) {
@@ -57,12 +58,15 @@ data class AgentPolicy(
             val network = tool in NetworkTools.networkToolNames
             val web = tool in WEB_TOOLS
             val log = tool == "read_selected_log" || tool == "agent_history"
-            val script = tool == "run_script"
-            (!network || allowNetwork) && (!web || allowWebSearch) && (!log || allowLogs) && (!script || allowScripts)
+            val script = tool == "run_script" || tool == "run_cli"
+            val cliInstall = tool in CLI_INSTALL_TOOLS
+            (!network || allowNetwork) && (!web || allowWebSearch) && (!log || allowLogs) &&
+                (!script || allowScripts) && (!cliInstall || (allowCliInstall && allowNetwork))
         }
     }
 
     companion object {
+        val CLI_INSTALL_TOOLS = setOf("install_cli", "remove_cli")
         val WEB_TOOLS = setOf("search_baidu", "search_bing", "search_exa")
     }
 }
@@ -132,6 +136,7 @@ object AgentRunPreferences {
             allowWebSearch = prefs.getBoolean("allow_web_search", true),
             allowLogs = prefs.getBoolean("allow_logs", true),
             allowScripts = prefs.getBoolean("allow_scripts", true),
+            allowCliInstall = prefs.getBoolean("allow_cli_install", false),
             requireInitialToolCall = prefs.getBoolean("require_initial_tool", false),
             confirmPlan = prefs.getBoolean("confirm_plan", false),
         )
@@ -154,6 +159,7 @@ object AgentRunPreferences {
             .putBoolean("allow_web_search", policy.allowWebSearch)
             .putBoolean("allow_logs", policy.allowLogs)
             .putBoolean("allow_scripts", policy.allowScripts)
+            .putBoolean("allow_cli_install", policy.allowCliInstall)
             .putBoolean("require_initial_tool", policy.requireInitialToolCall)
             .putBoolean("confirm_plan", policy.confirmPlan)
             .apply()
@@ -185,6 +191,7 @@ object AgentRunPreferences {
                         allowWebSearch = item.optBoolean("allow_web_search", true),
                         allowLogs = item.optBoolean("allow_logs", true),
                         allowScripts = item.optBoolean("allow_scripts", true),
+                        allowCliInstall = item.optBoolean("allow_cli_install", false),
                         requireInitialToolCall = item.optBoolean("require_initial_tool", false),
                         confirmPlan = item.optBoolean("confirm_plan", false),
                     ),
@@ -211,6 +218,7 @@ object AgentRunPreferences {
                 .put("allow_web_search", template.config.policy.allowWebSearch)
                 .put("allow_logs", template.config.policy.allowLogs)
                 .put("allow_scripts", template.config.policy.allowScripts)
+                .put("allow_cli_install", template.config.policy.allowCliInstall)
                 .put("require_initial_tool", template.config.policy.requireInitialToolCall)
                 .put("confirm_plan", template.config.policy.confirmPlan)
                 .put("protocol", template.config.protocol.name)

@@ -19,6 +19,47 @@ class NetworkAgentProtocolTest {
     }
 
     @Test
+    fun qwenPromptUsesNativeXmlToolCallContract() {
+        val messages = org.json.JSONArray()
+            .put(JSONObject().put("role", "system").put("content", "Use tools."))
+            .put(JSONObject().put("role", "user").put("content", "列出文件"))
+        val tools = """[{"type":"function","function":{"name":"file_list","parameters":{"type":"object"}}}]"""
+
+        val prompt = NetworkAgentProtocol.qwenPrompt(messages, tools, think = false)
+
+        assertTrue(prompt.contains("<|im_start|>system"))
+        assertTrue(prompt.contains("<tools>"))
+        assertTrue(prompt.contains("<function=example_function_name>"))
+        assertTrue(prompt.contains("<|im_start|>assistant\n<think>\n\n</think>"))
+        assertTrue(!prompt.contains("file_list(path="))
+    }
+
+    @Test
+    fun qwenRunScriptSchemaNamesAndroidShellAndUnavailablePlatforms() {
+        val tools = org.json.JSONArray(NetworkAgentProtocol.nativeToolsJson(setOf("run_script")))
+        val function = tools.getJSONObject(0).getJSONObject("function")
+        val parameters = function.getJSONObject("parameters")
+        val script = parameters.getJSONObject("properties").getJSONObject("script")
+        assertTrue(function.getString("description").contains("/system/bin/sh"))
+        assertTrue(function.getString("description").contains("netsh"))
+        assertTrue(script.getString("description").contains("Android"))
+        assertEquals(500, parameters.getJSONObject("properties").getJSONObject("timeout_ms").getInt("minimum"))
+    }
+
+    @Test
+    fun cliInstallSchemaRequiresIntegrityAndDescribesPrivateScope() {
+        val tools = org.json.JSONArray(NetworkAgentProtocol.nativeToolsJson(setOf("install_cli", "run_cli")))
+        val install = (0 until tools.length()).map { tools.getJSONObject(it) }
+            .first { it.getJSONObject("function").getString("name") == "install_cli" }
+            .getJSONObject("function")
+        val parameters = install.getJSONObject("parameters")
+        assertEquals("name", parameters.getJSONArray("required").getString(0))
+        assertEquals("url", parameters.getJSONArray("required").getString(1))
+        assertEquals("sha256", parameters.getJSONArray("required").getString(2))
+        assertTrue(install.getString("description").contains("never installs APKs"))
+        assertEquals("boolean", parameters.getJSONObject("properties").getJSONObject("replace").getString("type"))
+    }
+    @Test
     fun parsesExactlyOneRegisteredToolCall() {
         val call = NetworkAgentProtocol.parseToolCall(
             """{"tool_call":{"name":"dns_lookup","arguments":{"domain":"example.com","record_type":"A"}}}"""
@@ -63,6 +104,14 @@ class NetworkAgentProtocolTest {
         val function = tools.getJSONObject(0).getJSONObject("function")
         assertEquals("dns_lookup", function.getString("name"))
         assertTrue(function.getJSONObject("parameters").getJSONObject("properties").has("domain"))
+    }
+
+    @Test
+    fun nativeFallbackPromptKeepsTheToolRequirement() {
+        val prompt = NetworkAgentProtocol.nativeFallbackPrompt("列出文件", setOf("file_list"), true)
+        assertTrue(prompt.contains("file_list"))
+        assertTrue(prompt.contains("must call one enabled function"))
+        assertTrue(prompt.contains("<tool_call><function=FUNCTION_NAME>"))
     }
 
     @Test
@@ -130,6 +179,25 @@ class NetworkAgentProtocolTest {
         assertTrue(jsonParsed is NetworkAgentProtocol.ToolCallParseResult.Call)
     }
 
+    @Test
+    fun normalizesQwenXmlIntegerArgumentsWithoutChangingStrings() {
+        val parsed = NetworkAgentProtocol.parseToolInvocation(
+            "[]",
+            """
+                <tool_call>
+                <function=search_bing>
+                <parameter=query>123</parameter>
+                <parameter=limit>3</parameter>
+                </function>
+                </tool_call>
+            """.trimIndent(),
+            setOf("search_bing"),
+        )
+        assertTrue(parsed is NetworkAgentProtocol.ToolCallParseResult.Call)
+        val call = (parsed as NetworkAgentProtocol.ToolCallParseResult.Call).value
+        assertEquals("123", call.arguments.getString("query"))
+        assertEquals(3, call.arguments.getInt("limit"))
+    }
     @Test
     fun reportsEmittedButUnexecutableCallsAndEmptyToolResults() {
         val invalid = NetworkAgentProtocol.parseToolInvocation(

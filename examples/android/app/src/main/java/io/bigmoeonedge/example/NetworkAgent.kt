@@ -103,6 +103,27 @@ object NetworkAgentProtocol {
         }
     }
 
+    private val QWEN_INTEGER_ARGUMENTS = setOf(
+        "count", "timeout_ms", "limit", "max_entries", "offset", "max_bytes",
+    )
+
+    private fun qwenParameterValue(key: String, value: String): Any {
+        val scalar = value.trim()
+        if (key in QWEN_INTEGER_ARGUMENTS) {
+            val number = scalar.toDoubleOrNull()
+            if (number != null && number.isFinite() && number % 1.0 == 0.0 &&
+                number >= Int.MIN_VALUE && number <= Int.MAX_VALUE
+            ) {
+                return number.toInt()
+            }
+        }
+        return when {
+            scalar.startsWith("{") -> runCatching { JSONObject(scalar) }.getOrDefault(scalar)
+            scalar.startsWith("[") -> runCatching { JSONArray(scalar) }.getOrDefault(scalar)
+            else -> value
+        }
+    }
+
     /** Decode one canonical tool invocation from any supported model wire format. */
     fun parseToolInvocation(
         toolCallsJson: String,
@@ -142,11 +163,7 @@ object NetworkAgentProtocol {
         parameterPattern.findAll(function.groupValues[2]).forEach { match ->
             val key = match.groupValues[1]
             val value = match.groupValues[2].trim()
-            arguments.put(key, when {
-                value.startsWith("{") -> runCatching { JSONObject(value) }.getOrDefault(value)
-                value.startsWith("[") -> runCatching { JSONArray(value) }.getOrDefault(value)
-                else -> value
-            })
+            arguments.put(key, qwenParameterValue(key, value))
         }
         return ToolCall(name, arguments)
     }
@@ -181,9 +198,22 @@ object NetworkAgentProtocol {
             put("type", "string")
             if (description.isNotBlank()) put("description", description)
         }
-        fun integerProperty(description: String = "") = JSONObject().apply {
+        fun stringArrayProperty(description: String = "") = JSONObject().apply {
+            put("type", "array")
+            put("items", JSONObject().put("type", "string"))
+            put("maxItems", 32)
+            if (description.isNotBlank()) put("description", description)
+        }
+        fun integerProperty(description: String = "", minimum: Int? = null, maximum: Int? = null) = JSONObject().apply {
             put("type", "integer")
             if (description.isNotBlank()) put("description", description)
+            minimum?.let { put("minimum", it) }
+            maximum?.let { put("maximum", it) }
+        }
+        fun enumString(description: String, values: List<String>) = JSONObject().apply {
+            put("type", "string")
+            put("description", description)
+            put("enum", JSONArray(values))
         }
         fun schema(name: String): JSONObject {
             val properties = JSONObject()
@@ -192,17 +222,38 @@ object NetworkAgentProtocol {
                 properties.put(key, stringProperty(description)); required.put(key)
             }
             fun optionalString(key: String, description: String = "") = properties.put(key, stringProperty(description))
-            fun optionalInt(key: String, description: String = "") = properties.put(key, integerProperty(description))
+            fun optionalInt(key: String, description: String = "", minimum: Int? = null, maximum: Int? = null) =
+                properties.put(key, integerProperty(description, minimum, maximum))
             when (name) {
-                "dns_lookup" -> { requiredString("domain", "Public hostname"); requiredString("record_type", "A or AAAA") }
-                "ping_host" -> { requiredString("host", "Public hostname or IP"); optionalInt("count"); optionalInt("timeout_ms") }
-                "http_probe" -> { requiredString("url", "Public HTTPS URL"); optionalString("method", "HEAD or GET") }
+                "dns_lookup" -> {
+                    properties.put("domain", stringProperty("Public DNS hostname")); required.put("domain")
+                    properties.put("record_type", enumString("DNS record type", listOf("A", "AAAA"))); required.put("record_type")
+                }
+                "ping_host" -> { requiredString("host", "Public hostname or public IP"); optionalInt("count", "Echo requests", 1, 4); optionalInt("timeout_ms", "Per-request timeout", 500, 2000) }
+                "http_probe" -> { requiredString("url", "Public HTTPS URL"); properties.put("method", enumString("HTTP method", listOf("HEAD", "GET"))) }
                 "network_diagnose" -> requiredString("url", "Public HTTPS URL")
-                "search_baidu", "search_bing", "search_exa" -> { requiredString("query"); optionalInt("limit") }
-                "run_script" -> { requiredString("script"); optionalInt("timeout_ms") }
-                "file_list" -> { optionalString("path"); optionalInt("max_entries") }
-                "file_read" -> { requiredString("path"); optionalInt("offset"); optionalInt("max_bytes") }
-                "read_selected_log" -> optionalInt("max_bytes")
+                "search_baidu", "search_bing", "search_exa" -> { requiredString("query", "Search terms"); optionalInt("limit", "Maximum results", 1, 5) }
+                "run_script" -> {
+                    requiredString("script", "POSIX shell script executed by /system/bin/sh on Android; Python, PowerShell, Windows netsh and package-install commands are unavailable")
+                    optionalInt("timeout_ms", "Execution timeout in milliseconds", 500, 30000)
+                }
+                "run_cli" -> {
+                    requiredString("name", "Installed POSIX shell command name")
+                    properties.put("args", stringArrayProperty("At most 32 command arguments"))
+                    optionalString("stdin", "Optional UTF-8 standard input")
+                    optionalInt("timeout_ms", "Execution timeout in milliseconds", 500, 30000)
+                }
+                "file_list" -> { optionalString("path", "Relative path below the app private files directory"); optionalInt("max_entries", "Maximum entries", 1, 200) }
+                "file_read" -> { requiredString("path", "Relative text path below the app private files directory"); optionalInt("offset", "Byte offset", 0, null); optionalInt("max_bytes", "Maximum bytes", 512, 16384) }
+                "read_selected_log" -> optionalInt("max_bytes", "Maximum bytes", 512, 8192)
+                "cli_catalog" -> Unit
+                "install_cli" -> {
+                    requiredString("name", "Installed command name")
+                    requiredString("url", "HTTPS URL for a POSIX shell script with a shebang")
+                    requiredString("sha256", "Expected SHA-256 digest, exactly 64 hexadecimal characters")
+                    properties.put("replace", JSONObject().put("type", "boolean").put("description", "Replace an existing tool with the same name"))
+                }
+                "remove_cli" -> requiredString("name", "Installed command name")
             }
             return JSONObject().apply {
                 put("type", "object")
@@ -217,12 +268,119 @@ object NetworkAgentProtocol {
                 put("type", "function")
                 put("function", JSONObject().apply {
                     put("name", name)
-                    put("description", "Read-only Agent capability: $name")
+                    put("description", toolDescription(name))
                     put("parameters", schema(name))
                 })
             })
         }
         return result.toString()
+    }
+
+    private fun toolDescription(name: String): String = when (name) {
+        "run_script" -> "/system/bin/sh on Android; working directory is the app private files directory; PATH is /system/bin:/system/xbin. Installed commands must be invoked through run_cli because Android does not allow downloaded native code execution from writable app storage. Python, Windows commands such as netsh, PowerShell, root and APK package installation are unavailable."
+        "install_cli" -> "Download and install one user-authorized POSIX shell command into the app private bin directory. Requires HTTPS, a public host and a matching SHA-256; accepts only a shebang script, never installs APKs, native binaries or system packages."
+        "remove_cli" -> "Remove one POSIX shell command previously installed in the app private bin directory."
+        "run_cli" -> "Run one installed POSIX shell command through /system/bin/sh with bounded arguments, input, time and output."
+        "cli_catalog" -> "List POSIX shell commands installed in the app private bin directory."
+        "file_list", "file_read" -> "Read-only access to the app private files directory; paths are relative and traversal is rejected."
+        "read_selected_log" -> "Read only the text explicitly pasted by the user; no device logcat access."
+        "search_exa" -> "Semantic public web search; requires the app's configured Exa API key."
+        else -> "Read-only Agent capability: $name"
+    }
+
+    fun nativeFallbackPrompt(
+        request: String,
+        allowedTools: Set<String>,
+        requireInitialToolCall: Boolean,
+        protocol: AgentProtocolProfile = AgentProtocolProfile.QWEN,
+    ): String = buildString {
+        append("Agent task: ")
+        append(JSONObject.quote(request.trim().take(MAX_RESULT_CHARS)))
+        append("\nEnabled functions: ")
+        append(allowedTools.toList().sorted().joinToString(", ").ifBlank { "none" })
+        if (protocol == AgentProtocolProfile.QWEN && allowedTools.isNotEmpty()) {
+            append("\nFor a function call, output only this Qwen XML format with no suffix:")
+            append("\n<tool_call><function=FUNCTION_NAME>")
+            append("\n<parameter=PARAMETER_NAME>VALUE</parameter>")
+            append("\n</function></tool_call>")
+        }
+        if (requireInitialToolCall && allowedTools.isNotEmpty()) {
+            append("\nThe first response must call one enabled function. Do not answer with prose before the function call.")
+        }
+    }
+
+    /** Render the Qwen3.6 GGUF template locally when the backend template path is unavailable. */
+    fun qwenPrompt(messages: JSONArray, toolsJson: String, think: Boolean = false): String = buildString {
+        val system = messages.optJSONObject(0)?.takeIf { it.optString("role") == "system" }
+            ?.optString("content").orEmpty()
+        append("<|im_start|>system\n")
+        if (toolsJson.isNotBlank()) {
+            append("# Tools\n\nYou have access to the following functions:\n\n<tools>")
+            val tools = JSONArray(toolsJson)
+            for (index in 0 until tools.length()) append("\n").append(tools.getJSONObject(index).toString())
+            append("\n</tools>\n\n")
+            append("If you choose to call a function ONLY reply in the following format with NO suffix:\n\n")
+            append("<tool_call>\n<function=example_function_name>\n")
+            append("<parameter=example_parameter_1>\nvalue_1\n</parameter>\n")
+            append("</function>\n</tool_call>\n\n")
+            append("<IMPORTANT>\nReminder:\n")
+            append("- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n")
+            append("- Required parameters MUST be specified\n")
+            append("- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n")
+            append("- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n")
+            append("</IMPORTANT>")
+        }
+        if (system.isNotBlank()) append("\n\n").append(system)
+        append("<|im_end|>\n")
+
+        var index = if (system.isNotBlank()) 1 else 0
+        while (index < messages.length()) {
+            val message = messages.getJSONObject(index)
+            when (message.optString("role")) {
+                "user" -> append("<|im_start|>user\n").append(message.optString("content"))
+                    .append("<|im_end|>\n")
+                "assistant" -> {
+                    append("<|im_start|>assistant\n")
+                    val content = message.optString("content")
+                    if (content.isNotBlank()) append(content)
+                    val calls = message.optJSONArray("tool_calls")
+                    if (calls != null) {
+                        for (callIndex in 0 until calls.length()) {
+                            val call = calls.getJSONObject(callIndex)
+                            val function = call.optJSONObject("function") ?: call
+                            val name = function.optString("name")
+                            val arguments = runCatching { JSONObject(function.optString("arguments", "{}")) }
+                                .getOrDefault(JSONObject())
+                            append("\n<tool_call>\n<function=").append(name).append(">\n")
+                            val keys = arguments.keys()
+                            while (keys.hasNext()) {
+                                val key = keys.next()
+                                val value = arguments.get(key)
+                                append("<parameter=").append(key).append(">\n")
+                                    .append(if (value is JSONObject || value is JSONArray) value.toString() else value)
+                                    .append("\n</parameter>\n")
+                            }
+                            append("</function>\n</tool_call>")
+                        }
+                    }
+                    append("<|im_end|>\n")
+                }
+                "tool" -> {
+                    append("<|im_start|>user")
+                    while (index < messages.length() && messages.getJSONObject(index).optString("role") == "tool") {
+                        append("\n<tool_response>\n")
+                            .append(messages.getJSONObject(index).optString("content"))
+                            .append("\n</tool_response>")
+                        index++
+                    }
+                    append("<|im_end|>\n")
+                    continue
+                }
+            }
+            index++
+        }
+        append("<|im_start|>assistant\n")
+        if (!think) append("<think>\n\n</think>\n\n") else append("<think>\n")
     }
 
     /** GPT-OSS/Qwen may answer directly unless the user explicitly requires first-turn evidence. */
@@ -257,6 +415,12 @@ object NetworkAgentProtocol {
             Do not print a JSON wrapper and do not describe a tool call in prose. After a tool result,
             call another function only for a concrete information gap; otherwise answer the user's task
             in the user's language.
+
+            run_script is Android-only: the app invokes /system/bin/sh with working directory set to
+            the app private files directory and PATH=/system/bin:/system/xbin. Use POSIX sh commands
+            such as cat, ls, grep and getprop only. Installed commands are shebang shell scripts invoked
+            through run_cli. Python, PowerShell, Windows netsh, adb, root and APK/package installation
+            are unavailable; do not emit commands for those platforms.
 
             Enabled functions: ${allowedTools.toList().sorted().joinToString(", ").ifBlank { "none" }}.
             """.trimIndent(),
@@ -320,7 +484,11 @@ object NetworkAgentProtocol {
         "- search_baidu: {\"query\":\"search terms\",\"limit\":1..5}. Public Baidu titles, URLs and snippets.",
         "- search_bing: {\"query\":\"search terms\",\"limit\":1..5}. Public Bing titles, URLs and snippets.",
         "- search_exa: {\"query\":\"search terms\",\"limit\":1..5}. Semantic Exa results; needs a locally configured API key.",
-        "- run_script: {\"script\":\"shell script\",\"timeout_ms\":500..30000}. Runs only in the app private files directory.",
+        "- run_script: {\"script\":\"POSIX /system/bin/sh script\",\"timeout_ms\":500..30000}. Android only; it uses /system/bin:/system/xbin. Use run_cli for installed shell commands; downloaded native binaries cannot be executed from writable app storage.",
+        "- cli_catalog: {}. Lists installed app-private POSIX shell commands.",
+        "- install_cli: {\"name\":\"tool\",\"url\":\"HTTPS URL to a shebang shell script\",\"sha256\":\"64 hex characters\",\"replace\":true|false}. Downloads at most 64 MiB, verifies SHA-256, and installs only into app-private bin; APKs, native binaries and system packages are rejected.",
+        "- run_cli: {\"name\":\"tool\",\"args\":[\"argument\"],\"stdin\":\"optional input\",\"timeout_ms\":500..30000}. Runs an installed shell command through /system/bin/sh.",
+        "- remove_cli: {\"name\":\"tool\"}. Removes an installed app-private shell command.",
         "- file_list: {\"path\":\"optional relative directory\",\"max_entries\":1..200}. Lists app-private files.",
         "- file_read: {\"path\":\"relative text file\",\"offset\":0..,\"max_bytes\":512..16384}. Read the next chunk; continue with next_offset.",
         "- device_info: {}. Android release, SDK, device and app build metadata.",
@@ -585,7 +753,7 @@ internal class AgentLog private constructor(
 internal fun redactSelectedLog(text: String, selectedLog: String): String =
     if (selectedLog.isNotEmpty()) text.replace(selectedLog, "[selected log omitted]") else text
 
-/** Fixed, validated, read-only diagnostics. The model never obtains ProcessBuilder or URL access. */
+/** Fixed diagnostics plus explicitly gated app-private command-line tool management. */
 object NetworkTools {
     val networkToolNames = setOf(
         "network_state", "network_capabilities", "network_addresses", "dns_lookup", "ping_host", "http_probe", "network_diagnose", "wifi_info",
@@ -595,14 +763,14 @@ object NetworkTools {
         "network_state", "network_capabilities", "network_addresses", "dns_lookup", "ping_host",
         "http_probe", "network_diagnose", "wifi_info", "device_info", "app_info", "battery_state",
         "thermal_state", "memory_state", "display_state", "device_storage", "runtime_metrics", "process_memory",
-        "model_catalog",
+        "model_catalog", "cli_catalog",
     )
     val names = setOf(
         "network_state", "network_capabilities", "network_addresses", "dns_lookup", "ping_host", "http_probe", "network_diagnose", "wifi_info",
         "device_info", "app_info", "battery_state", "thermal_state", "memory_state", "display_state",
         "device_storage", "app_files", "runtime_metrics", "process_memory", "model_catalog",
         "read_selected_log", "agent_history", "search_baidu", "search_bing", "search_exa", "run_script",
-        "file_list", "file_read",
+        "file_list", "file_read", "cli_catalog", "install_cli", "run_cli", "remove_cli",
     )
     private val DIRECT_EXECUTOR = Executor { command -> command.run() }
     private const val HTTP_HEADER_MAX_BYTES = 8 * 1024
@@ -614,7 +782,7 @@ object NetworkTools {
         context: Context,
         call: NetworkAgentProtocol.ToolCall,
         selectedLog: String,
-        allowedTools: Set<String> = names,
+        allowedTools: Set<String> = emptySet(),
     ): ToolResult = try {
         require(call.name in allowedTools) { "Tool is disabled by the selected toolkit" }
         call.arguments.validateFor(call.name)
@@ -629,6 +797,10 @@ object NetworkTools {
             "wifi_info" -> wifiInfo(context).asToolResult(call.name, "Wi-Fi 链路信息")
             "search_baidu", "search_bing", "search_exa" ->
                 WebSearchTools.execute(context, call.name, call.arguments).asToolResult(call.name, "网络搜索")
+            "cli_catalog" -> CliTools.catalog(context).asToolResult(call.name, "命令行工具目录")
+            "install_cli" -> CliTools.install(context, call.arguments).asToolResult(call.name, "安装命令行工具")
+            "run_cli" -> CliTools.run(context, call.arguments).asToolResult(call.name, "运行命令行工具")
+            "remove_cli" -> CliTools.remove(context, call.arguments).asToolResult(call.name, "删除命令行工具")
             "run_script" -> ShellTools.execute(context, call.arguments).asToolResult(call.name, "脚本执行")
             "file_list" -> FileTools.list(context, call.arguments).asToolResult(call.name, "文件列表")
             "file_read" -> FileTools.read(context, call.arguments).asToolResult(call.name, "分段读文件")
@@ -681,6 +853,10 @@ object NetworkTools {
             name == "ping_host" -> "$label：${optString("status", "unknown")}"
             name == "search_baidu" || name == "search_bing" || name == "search_exa" ->
                 "$label：${optInt("result_count")} 条结果"
+            name == "cli_catalog" -> "$label：${optInt("tool_count")} 个工具"
+            name == "install_cli" -> "$label：${optString("name")}，${formatBytes(optLong("bytes"))}"
+            name == "run_cli" -> "$label：${optString("name")}，退出码 ${opt("exit_code")}"
+            name == "remove_cli" -> "$label：${optString("name")}"
             name == "run_script" -> "$label：${optString("status")}，退出码 ${opt("exit_code")}"
             name == "file_list" -> "$label：${optJSONArray("files")?.length() ?: 0} 个文件"
             name == "file_read" -> "$label：${optInt("bytes")} bytes，${if (optBoolean("eof")) "已到结尾" else "可继续读取"}"
@@ -1198,6 +1374,8 @@ object NetworkTools {
             "ping_host" -> setOf("host")
             "http_probe", "network_diagnose" -> setOf("url")
             "search_baidu", "search_bing", "search_exa" -> setOf("query")
+            "install_cli", "remove_cli" -> setOf("name")
+            "run_cli" -> setOf("name")
             "run_script" -> setOf("script")
             "file_list" -> emptySet()
             "file_read" -> setOf("path")
@@ -1215,6 +1393,9 @@ object NetworkTools {
             "device_storage", "app_files", "runtime_metrics", "process_memory", "model_catalog", "agent_history" -> emptySet()
             "read_selected_log" -> setOf("max_bytes")
             "search_baidu", "search_bing", "search_exa" -> setOf("query", "limit")
+            "install_cli" -> setOf("name", "url", "sha256", "replace")
+            "run_cli" -> setOf("name", "args", "stdin", "timeout_ms")
+            "remove_cli" -> setOf("name")
             "run_script" -> setOf("script", "timeout_ms")
             "file_list" -> setOf("path", "max_entries")
             "file_read" -> setOf("path", "offset", "max_bytes")
@@ -1241,6 +1422,22 @@ object NetworkTools {
                 requiredString("query")
                 optionalInteger("limit")
             }
+            "install_cli" -> {
+                requiredString("name")
+                requiredString("url")
+                requiredString("sha256")
+                if (has("replace") && !isNull("replace")) require(get("replace") is Boolean) { "replace must be a boolean" }
+            }
+            "run_cli" -> {
+                requiredString("name")
+                if (has("args") && !isNull("args")) {
+                    val args = optJSONArray("args") ?: error("args must be an array")
+                    require((0 until args.length()).all { args.get(it) is String }) { "args must contain only strings" }
+                }
+                optionalString("stdin")
+                optionalInteger("timeout_ms")
+            }
+            "remove_cli" -> requiredString("name")
             "run_script" -> {
                 requiredString("script")
                 optionalInteger("timeout_ms")
@@ -1390,7 +1587,8 @@ class NetworkAgentCoordinator(private val scope: CoroutineScope) {
     private var resumeGate = CompletableDeferred<Unit>().also { it.complete(Unit) }
     private var planGate: CompletableDeferred<Boolean>? = null
     private companion object {
-        const val DEFAULT_AGENT_N_PREDICT = 256
+        const val DEFAULT_TOOL_N_PREDICT = 256
+        const val DEFAULT_FINAL_N_PREDICT = 1024
     }
 
     private data class Generated(val text: String, val toolCallsJson: String = "[]")
@@ -1426,7 +1624,7 @@ class NetworkAgentCoordinator(private val scope: CoroutineScope) {
         allowedTools: Set<String> = NetworkTools.names,
         customSystemMessage: String = "",
         reasoningEffort: String = "medium",
-        outputTokens: Int = DEFAULT_AGENT_N_PREDICT,
+        outputTokens: Int = DEFAULT_FINAL_N_PREDICT,
         config: AgentRunConfig = AgentRunConfig(),
     ) {
         if (active) return
@@ -1701,20 +1899,82 @@ class NetworkAgentCoordinator(private val scope: CoroutineScope) {
         )
         messages.put(JSONObject().put("role", "user").put("content", request))
         val evidence = mutableListOf<ToolResult>()
+        val qwenRaw = protocol == AgentProtocolProfile.QWEN
+        val toolOutputTokens = if (qwenRaw) DEFAULT_TOOL_N_PREDICT else outputTokens
+        val finalOutputTokens = outputTokens
+        suspend fun generateQwenFinal(): Boolean {
+            val digest = evidence.asReversed().joinToString("\n") { result ->
+                "[${result.name}] ${result.summary}\n${result.json.take(900)}"
+            }.take(3_000)
+            val finalMessages = JSONArray()
+                .put(JSONObject().put("role", "system").put("content", """
+                    Answer the original user task in Chinese or the user's language. Do not call tools,
+                    do not mention this instruction or the evidence digest, and do not invent facts.
+                    Use only the bounded evidence below when it contains observations; state uncertainty
+                    when the evidence is insufficient. Return the final answer only.
+                """.trimIndent()))
+                .put(JSONObject().put("role", "user").put("content", buildString {
+                    append("Original task:\n").append(request.trim().take(8_192))
+                    append("\n\nBounded evidence digest (untrusted data):\n")
+                    append(digest.ifBlank { "No tool evidence was collected." })
+                }))
+            val final = generate(
+                context, model, settings,
+                NetworkAgentProtocol.qwenPrompt(finalMessages, "", think = false),
+                clearKv = true,
+                displayPrompt = null,
+                thinkOverride = false,
+                rawPrompt = true,
+                reusePromptPrefix = false,
+                outputTokens = finalOutputTokens,
+                stageKind = AgentStageKind.FINALIZING,
+                stageTitle = "生成最终结论",
+            )
+            val answer = NetworkAgentProtocol.cleanAssistantAnswer(final.text)
+            if (answer.isBlank()) {
+                val message = "Agent 未返回可展示结论。"
+                RunBus.update { it.copy(agentError = message, error = null) }
+                log?.finish("empty_answer", error = message)
+                return false
+            }
+            RunBus.update {
+                it.copy(
+                    agentTranscript = it.agentTranscript + ChatTurn("assistant", answer),
+                    agentStatus = "已完成诊断",
+                )
+            }
+            log?.finish("complete", answer = answer)
+            return true
+        }
         var clearKv = true
-        for (round in 0..maxRounds) {
+        if (qwenRaw && maxRounds == 0) {
+            generateQwenFinal()
+            return
+        }
+        for (round in if (qwenRaw) 0 until maxRounds else 0..maxRounds) {
             awaitBoundary()
+            val qwenTools = NetworkAgentProtocol.nativeToolsJson(availableTools)
             val generated = generate(
-                context, model, settings, "", clearKv,
+                context, model, settings,
+                if (qwenRaw) NetworkAgentProtocol.qwenPrompt(messages, qwenTools, think = false)
+                else NetworkAgentProtocol.nativeFallbackPrompt(
+                    request,
+                    availableTools,
+                    requireInitialToolCall,
+                    protocol,
+                ),
+                clearKv,
                 displayPrompt = if (clearKv) request else null,
-                messagesJson = messages.toString(),
-                toolsJson = NetworkAgentProtocol.nativeToolsJson(availableTools),
+                messagesJson = if (qwenRaw) null else messages.toString(),
+                toolsJson = if (qwenRaw) null else qwenTools,
                 toolChoice = NetworkAgentProtocol.nativeToolChoice(round, availableTools, requireInitialToolCall),
                 thinkOverride = protocol.thinking,
                 chatTemplateKwargsJson = if (protocol == AgentProtocolProfile.GPT_OSS) {
                     JSONObject().put("reasoning_effort", reasoningEffort).toString()
                 } else null,
-                outputTokens = outputTokens,
+                rawPrompt = qwenRaw,
+                reusePromptPrefix = qwenRaw,
+                outputTokens = toolOutputTokens,
             )
             clearKv = false
             val nativeCalls = NetworkAgentProtocol.parseNativeToolCalls(generated.toolCallsJson, availableTools)
@@ -1733,8 +1993,21 @@ class NetworkAgentCoordinator(private val scope: CoroutineScope) {
                 }
                 if (round == 0 && availableTools.isNotEmpty() && requireInitialToolCall) {
                     val message = "首轮未返回工具调用，已拒绝无证据的普通文本结论。请关闭“首轮强制工具调用”，或启用可用工具后重试。"
-                    RunBus.update { it.copy(agentError = message, error = null) }
+                    val answer = NetworkAgentProtocol.cleanAssistantAnswer(generated.text)
+                    RunBus.update { state ->
+                        state.copy(
+                            agentTranscript = if (answer.isBlank()) state.agentTranscript
+                            else state.agentTranscript + ChatTurn("assistant", answer),
+                            agentStatus = "未调用工具，已保留模型输出",
+                            agentError = message,
+                            error = null,
+                        )
+                    }
                     log?.finish("missing_tool_call", answer = generated.text, error = message)
+                    return
+                }
+                if (qwenRaw) {
+                    generateQwenFinal()
                     return
                 }
                 val answer = NetworkAgentProtocol.cleanAssistantAnswer(generated.text)
@@ -1764,7 +2037,7 @@ class NetworkAgentCoordinator(private val scope: CoroutineScope) {
             }
             val callsToRun = (nativeCalls.ifEmpty { listOf(call) }).take(maxParallel.coerceIn(1, 2))
             val assistant = JSONObject().put("role", "assistant")
-            if (generated.text.isNotBlank()) assistant.put("content", generated.text)
+            if (protocol != AgentProtocolProfile.QWEN && generated.text.isNotBlank()) assistant.put("content", generated.text)
             val calls = JSONArray()
             callsToRun.forEachIndexed { index, currentCall ->
                 calls.put(
@@ -1847,6 +2120,10 @@ class NetworkAgentCoordinator(private val scope: CoroutineScope) {
                 RunBus.update { it.copy(agentCompactions = it.agentCompactions + 1, agentStatus = "正在压缩工具上下文…") }
                 RunBus.finishAgentStage(compactionStage, AgentStageStatus.COMPLETE, SystemClock.elapsedRealtime(), "事实摘要已重建")
             }
+            if (qwenRaw && round == maxRounds - 1) {
+                generateQwenFinal()
+                return
+            }
         }
     }
 
@@ -1861,6 +2138,8 @@ class NetworkAgentCoordinator(private val scope: CoroutineScope) {
         toolsJson: String? = null,
         toolChoice: String = "auto",
         chatTemplateKwargsJson: String? = null,
+        rawPrompt: Boolean = false,
+        reusePromptPrefix: Boolean = false,
         thinkOverride: Boolean = false,
         outputTokens: Int,
         stageKind: AgentStageKind = AgentStageKind.MODEL_GENERATION,
@@ -1874,7 +2153,8 @@ class NetworkAgentCoordinator(private val scope: CoroutineScope) {
                 context, model, prompt, settings, RunBus.state.value.sessionSig, clearKv, displayPrompt,
                 suppressTranscript = true, thinkOverride = thinkOverride, nPredictOverride = outputTokens,
                 messagesJson = messagesJson, toolsJson = toolsJson, toolChoice = toolChoice,
-                chatTemplateKwargsJson = chatTemplateKwargsJson,
+                chatTemplateKwargsJson = chatTemplateKwargsJson, rawPrompt = rawPrompt,
+                reusePromptPrefix = reusePromptPrefix,
             )
             val terminal = RunBus.state.first { it.generationId > before || (!it.busy && it.error != null) }
             terminal.error?.let { throw IllegalStateException(it) }

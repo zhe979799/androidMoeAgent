@@ -94,6 +94,13 @@ struct GenerateRequest {
     // Arbitrary model-template keyword arguments, encoded as a JSON object. GPT-OSS uses
     // reasoning_effort here; other templates may ignore keys they do not understand.
     std::string chat_template_kwargs_json;
+    // Bypass llama.cpp chat-template application for a caller that already rendered the model's
+    // native prompt. The inference backend, tokenization, KV cache and MoE streaming remain active.
+    bool raw_prompt = false;
+    // When true, compare the complete raw prompt with the tokens currently in seq 0, rewind the
+    // divergent KV suffix, and prefill only the new prompt suffix. A mismatch is recoverable by
+    // clearing the complete KV and retrying the prefill.
+    bool reuse_prompt_prefix = false;
     int n_predict = 32;
     bool think = true;
     bool clear_kv = true;

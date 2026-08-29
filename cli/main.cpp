@@ -159,14 +159,40 @@ static std::string json_unescape(const std::string & s) {
     return o;
 }
 
-// Find `"key"`, skip to its value. Returns the index just past the colon, or npos.
+// Find a top-level object member named `key` and return the index just past its colon.
+// Prompt and tool values are arbitrary JSON strings, so searching the raw line would mistake
+// quoted examples such as "tools": [] for request fields.
 static size_t json_value_pos(const std::string & line, const char * key) {
-    std::string pat = std::string("\"") + key + "\"";
-    size_t k = line.find(pat);
-    if (k == std::string::npos) return std::string::npos;
-    size_t c = line.find(':', k + pat.size());
-    if (c == std::string::npos) return std::string::npos;
-    return c + 1;
+    int depth = 0;
+    for (size_t i = 0; i < line.size();) {
+        const char c = line[i];
+        if (c == '"') {
+            const size_t start = ++i;
+            bool escaped = false;
+            for (; i < line.size(); ++i) {
+                if (escaped) {
+                    escaped = false;
+                } else if (line[i] == '\\') {
+                    escaped = true;
+                } else if (line[i] == '"') {
+                    break;
+                }
+            }
+            if (depth == 1 && i < line.size()) {
+                size_t next = i + 1;
+                while (next < line.size() && (line[next] == ' ' || line[next] == '\t' || line[next] == '\r' || line[next] == '\n'))
+                    ++next;
+                if (next < line.size() && line[next] == ':' && line.compare(start, i - start, key) == 0)
+                    return next + 1;
+            }
+            if (i < line.size()) ++i;
+            continue;
+        }
+        if (c == '{' || c == '[') ++depth;
+        else if (c == '}' || c == ']') --depth;
+        ++i;
+    }
+    return std::string::npos;
 }
 
 static bool json_get_string(const std::string & line, const char * key, std::string & out) {
@@ -215,6 +241,8 @@ struct SessionCmd {
     std::string tools_json;
     std::string tool_choice = "auto";
     std::string chat_template_kwargs_json;
+    bool raw_prompt = false;
+    bool reuse_prompt_prefix = false;
     int id = 0;
     int n_predict = 128;
     bool think = true;
@@ -223,18 +251,14 @@ struct SessionCmd {
 };
 
 static bool json_has_key(const std::string & line, const char * key) {
-    return line.find(std::string("\"") + key + "\"") != std::string::npos;
+    return json_value_pos(line, key) != std::string::npos;
 }
 
 // Extract one JSON object/array value without interpreting its schema. The session owns schema
 // validation; the CLI only has to preserve structured messages and tools across the line protocol.
 static bool json_get_raw(const std::string & line, const char * key, std::string & out) {
-    const std::string needle = std::string("\"") + key + "\"";
-    size_t p = line.find(needle);
+    size_t p = json_value_pos(line, key);
     if (p == std::string::npos) return false;
-    p = line.find(':', p + needle.size());
-    if (p == std::string::npos) return false;
-    ++p;
     while (p < line.size() && (line[p] == ' ' || line[p] == '\t' || line[p] == '\r' || line[p] == '\n')) ++p;
     if (p >= line.size() || (line[p] != '{' && line[p] != '[')) return false;
     std::vector<char> stack;
@@ -319,6 +343,8 @@ static int run_session_loop(const RunConfig & cfg,
                 if (c.parse_error.empty() && json_has_key(line, "tools") && !json_get_raw(line, "tools", c.tools_json))
                     c.parse_error = "tools is not a valid JSON array/object";
                 json_get_string(line, "tool_choice", c.tool_choice);
+                c.raw_prompt = json_get_bool(line, "raw_prompt", false);
+                c.reuse_prompt_prefix = json_get_bool(line, "reuse_prompt_prefix", false);
                 if (c.parse_error.empty() && json_has_key(line, "chat_template_kwargs") &&
                     !json_get_raw(line, "chat_template_kwargs", c.chat_template_kwargs_json))
                     c.parse_error = "chat_template_kwargs is not a valid JSON object";
@@ -372,6 +398,8 @@ static int run_session_loop(const RunConfig & cfg,
         req.tools_json = cmd.tools_json;
         req.tool_choice = cmd.tool_choice;
         req.chat_template_kwargs_json = cmd.chat_template_kwargs_json;
+        req.raw_prompt = cmd.raw_prompt;
+        req.reuse_prompt_prefix = cmd.reuse_prompt_prefix;
         req.n_predict = cmd.n_predict;
         req.think = cmd.think;
         req.clear_kv = cmd.clear_kv;

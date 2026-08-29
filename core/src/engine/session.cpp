@@ -861,6 +861,9 @@ RunResult Session::generate(GenerateRequest req,
     };
 
     const std::vector<common_chat_msg> history_before_turn = req.clear_kv ? std::vector<common_chat_msg>{} : im.chat_history;
+    // Chat-template mode has always reused its rendered history. Raw callers must opt in because
+    // the engine cannot infer whether an arbitrary prompt was built from the previous turn.
+    bool reuse_prompt_prefix = req.reuse_prompt_prefix;
 
     // clear_kv = "new chat": drop the KV and the engine-held conversation. Otherwise this turn
     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
@@ -881,7 +884,7 @@ RunResult Session::generate(GenerateRequest req,
     // WHOLE conversation so far, and set up reasoning parsing so a thinking model's internal
     // reasoning is stripped from the shown answer. req.think drives enable_thinking, per prompt.
     std::string prompt = req.prompt;
-    bool chat_on = im.chat_on;
+    bool chat_on = im.chat_on && !req.raw_prompt;
     const bool structured_request = !req.messages_json.empty();
     if (structured_request && !chat_on) return fail("structured messages require chat template mode");
     bool history_pushed = false;   // did we append this turn's user message to chat_history?
@@ -965,6 +968,14 @@ RunResult Session::generate(GenerateRequest req,
         }
     }
 
+    reuse_prompt_prefix = reuse_prompt_prefix || chat_on;
+    if (!req.clear_kv && !reuse_prompt_prefix) {
+        // A raw prompt without explicit prefix reuse cannot be placed after an unrelated KV state.
+        llama_memory_clear(llama_get_memory(ctx), true);
+        if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+        im.kv_tokens.clear();
+    }
+
     std::vector<llama_token> tokens(prompt.size() + 8);
     res.rendered_prompt = prompt;
     int n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
@@ -1015,32 +1026,39 @@ RunResult Session::generate(GenerateRequest req,
     // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
     // byte-identity gates exercise stays unchanged.
     size_t n_common = 0;
-    if (chat_on && !im.kv_tokens.empty()) {
+    if (reuse_prompt_prefix && !im.kv_tokens.empty()) {
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
         while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
             ++n_common;
+        bool target_rewound = true;
         if (n_common < im.kv_tokens.size()) {
             // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
             // re-prefill in that case rather than continuing from an inconsistent cache.
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
+            target_rewound = llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1);
+        }
+        if (!target_rewound) {
+            llama_memory_clear(llama_get_memory(ctx), true);
+            if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+            im.kv_tokens.clear();
+            n_common = 0;
+        } else {
+            im.kv_tokens.resize(n_common);
+            // The draft context mirrors the target's positions, so it has to be rewound to the SAME
+            // point. If it refuses, clear BOTH contexts; keeping the target prefix would make the
+            // next MTP operation start from incompatible positions.
+            if (im.ctx_dft && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, (llama_pos) n_common, -1)) {
                 llama_memory_clear(llama_get_memory(ctx), true);
+                llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+                im.kv_tokens.clear();
                 n_common = 0;
             }
-            im.kv_tokens.resize(n_common);
         }
-        // The draft context mirrors the target's positions, so it has to be rewound to the SAME
-        // point — including when n_common did not move, since the previous turn left it holding
-        // everything it generated. Miss this and the first prefill batch of the turn starts at a
-        // position the draft context already has, which llama.cpp rejects outright: the second
-        // message of a conversation fails while the first always works.
-        if (im.ctx_dft && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, (llama_pos) n_common, -1))
-            llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
     }
 
     // Roll this turn back to the state before it started: drop the KV added this turn, forget the
     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
     auto rollback_turn = [&]() {
-        if (chat_on) {
+        if (reuse_prompt_prefix) {
             if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1))
                 llama_memory_clear(llama_get_memory(ctx), true);
             im.kv_tokens.resize(n_common);
@@ -1058,7 +1076,7 @@ RunResult Session::generate(GenerateRequest req,
         // Whatever the target rolled back to, the draft context follows: a cancelled turn that left
         // the two at different positions would fail the NEXT turn, not this one.
         if (im.ctx_dft) {
-            const llama_pos keep = chat_on ? (llama_pos) n_common : 0;
+            const llama_pos keep = reuse_prompt_prefix ? (llama_pos) n_common : 0;
             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1))
                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
         }
@@ -1119,36 +1137,53 @@ RunResult Session::generate(GenerateRequest req,
     // context it never uses.
     const bool spec_on = im.cfg.spec.enabled();
     const bool mtp_on = im.mtp != nullptr;
-    for (int i = (int) n_common; i < n_prompt; i += im.cfg.n_batch) {
-        const int chunk = std::min(im.cfg.n_batch, n_prompt - i);
-        llama_batch pf;
-        if (mtp_on) {
-            // Positions are absolute here — the prompt token at index i sits at position i, reused
-            // prefix included — which is exactly what llama_batch_get_one would have inferred.
-            batch_fill(im.mtp_batch, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ false);
-            pf = im.mtp_batch;
-        } else {
-            pf = llama_batch_get_one(tokens.data() + i, chunk);
-        }
-        trace_begin(i, chunk, /*phase*/ 0);
-        if (llama_decode(ctx, pf) != 0) {
-            if (im.cancel_requested.load(std::memory_order_relaxed)) {
-                rollback_turn();
-                res.ok = true;
-                res.cancelled = true;
-                return res;
+    // A transient batch failure can leave llama.cpp with an unusable partial prefill. Clear both
+    // contexts and retry once from token zero; callers should not have to restart the session for a
+    // bad prefix reuse decision.
+    bool prefill_retried = false;
+    for (;;) {
+        bool retry_prefill = false;
+        for (int i = (int) n_common; i < n_prompt; i += im.cfg.n_batch) {
+            const int chunk = std::min(im.cfg.n_batch, n_prompt - i);
+            llama_batch pf;
+            if (mtp_on) {
+                // Positions are absolute here — the prompt token at index i sits at position i, reused
+                // prefix included — which is exactly what llama_batch_get_one would have inferred.
+                batch_fill(im.mtp_batch, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ false);
+                pf = im.mtp_batch;
+            } else {
+                pf = llama_batch_get_one(tokens.data() + i, chunk);
             }
-            if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during overlap prefill");
-            return fail("prefill decode failed");
+            trace_begin(i, chunk, /*phase*/ 0);
+            if (llama_decode(ctx, pf) != 0) {
+                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                    rollback_turn();
+                    res.ok = true;
+                    res.cancelled = true;
+                    return res;
+                }
+                if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during overlap prefill");
+                if (!prefill_retried) {
+                    llama_memory_clear(llama_get_memory(ctx), true);
+                    if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+                    im.kv_tokens.clear();
+                    n_common = 0;
+                    prefill_retried = true;
+                    retry_prefill = true;
+                    break;
+                }
+                return fail("prefill decode failed");
+            }
+            trace_flush();
+            // The draft context has to walk the prompt too: its KV must reach the last prompt position
+            // or the first draft is made from a hidden state that never saw the prompt.
+            if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
+                return fail("MTP draft context failed to process the prefill batch");
         }
-        trace_flush();
-        // The draft context has to walk the prompt too: its KV must reach the last prompt position
-        // or the first draft is made from a hidden state that never saw the prompt.
-        if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
-            return fail("MTP draft context failed to process the prefill batch");
+        if (!retry_prefill) break;
     }
     // The suffix is now in the KV; record it so the next turn can diff against it.
-    if (chat_on)
+    if (reuse_prompt_prefix)
         for (int i = (int) n_common; i < n_prompt; ++i)
             im.kv_tokens.push_back(tokens[i]);
     // Announced only once the prompt is in both contexts: begin() checks how far the draft context
@@ -1405,7 +1440,7 @@ RunResult Session::generate(GenerateRequest req,
             int np = llama_token_to_piece(im.vocab, out, piece, sizeof(piece), 0, true);
             std::string delta = np > 0 ? std::string(piece, np) : std::string();
             gen += delta;
-            if (chat_on) im.kv_tokens.push_back(out); // this token is now in the KV
+            if (reuse_prompt_prefix) im.kv_tokens.push_back(out); // this token is now in the KV
             if (spec_on) mtp_ctx.push_back(out);
             ++n_gen;
 
@@ -1451,7 +1486,7 @@ RunResult Session::generate(GenerateRequest req,
     // produced this answer, so trim back to what was actually emitted.
     if (spec_on) {
         const llama_pos emitted_end = (llama_pos) n_prompt + n_gen;
-        if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1)) {
+        if (reuse_prompt_prefix && !llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1)) {
             // Nothing survives that we can still describe, so say so rather than leave kv_tokens
             // asserting a prefix the context no longer holds. The next turn re-prefills in full.
             llama_memory_clear(llama_get_memory(ctx), true);
@@ -1478,7 +1513,7 @@ RunResult Session::generate(GenerateRequest req,
     loop_overhead_s += secs(loop_mark, clock_t_::now());
     s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
     s.n_prompt = n_prompt - (int) n_common; // tokens actually prefilled this turn (after KV reuse)
-    s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
+    s.n_past = reuse_prompt_prefix ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
     s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;

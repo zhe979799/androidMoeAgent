@@ -74,6 +74,8 @@ class RunService : Service() {
         val toolsJson: String?,
         val toolChoice: String,
         val chatTemplateKwargsJson: String?,
+        val rawPrompt: Boolean,
+        val reusePromptPrefix: Boolean,
         val nPredict: Int,
         val think: Boolean,
         val clearKv: Boolean,
@@ -333,8 +335,9 @@ class RunService : Service() {
             val renderedPrompt = o.optString("rendered_prompt")
             val toolCalls = o.optJSONArray("tool_calls")?.toString() ?: "[]"
             val trace = activeInferenceLog
-            activeInferenceLog = null
             val expectedStructuredPrompt = activeStructuredPrompt
+            val structuredRetry = activeRequest
+            activeInferenceLog = null
             activeStructuredPrompt = null
             activeRequest = null
             structuredPromptRetryUsed = false
@@ -407,6 +410,30 @@ class RunService : Service() {
                 renderedPrompt.isBlank() || !renderedPrompt.contains(it)
             } == true
             if (renderedMismatch) {
+                val fallbackPrompt = structuredRetry?.prompt?.takeIf { it.isNotBlank() }
+                if (!structuredPromptRetryUsed && structuredRetry?.messagesJson?.isNotBlank() == true && fallbackPrompt != null) {
+                    structuredPromptRetryUsed = true
+                    trace?.finish(
+                        "structured_prompt_retry",
+                        text,
+                        reasoning,
+                        renderedPrompt,
+                        toolCalls,
+                        summary,
+                        o.toString(),
+                        "structured prompt was not rendered; retrying through the model chat template",
+                    )
+                    sendGenerate(
+                        structuredRetry.copy(
+                            prompt = fallbackPrompt,
+                            messagesJson = null,
+                            displayPrompt = structuredRetry.displayPrompt ?: fallbackPrompt,
+                            clearKv = true,
+                        ),
+                        preserveStructuredRetry = true,
+                    )
+                    return@runCatching
+                }
                 val error = "Structured prompt was not rendered into the model input; generation was discarded."
                 trace?.finish("structured_prompt_mismatch", text, reasoning, renderedPrompt, toolCalls, summary, o.toString(), error)
                 RunBus.update { it.copy(state = EngineState.READY, telemetry = tel, answer = "", reasoning = "",
@@ -558,6 +585,8 @@ class RunService : Service() {
         toolsJson = intent.getStringExtra(EXTRA_TOOLS),
         toolChoice = intent.getStringExtra(EXTRA_TOOL_CHOICE) ?: "auto",
         chatTemplateKwargsJson = intent.getStringExtra(EXTRA_CHAT_TEMPLATE_KWARGS),
+        rawPrompt = intent.getBooleanExtra(EXTRA_RAW_PROMPT, false),
+        reusePromptPrefix = intent.getBooleanExtra(EXTRA_REUSE_PROMPT_PREFIX, false),
         nPredict = intent.getIntExtra(EXTRA_NPREDICT, AppSettings.DEFAULT_N_PREDICT),
         think = intent.getBooleanExtra(EXTRA_THINK, false),
         clearKv = intent.getBooleanExtra(EXTRA_CLEAR_KV, true),
@@ -588,6 +617,8 @@ class RunService : Service() {
             req.nPredict,
             req.think,
             req.clearKv,
+            req.rawPrompt,
+            req.reusePromptPrefix,
             req.displayPrompt,
             req.suppressTranscript,
         )
@@ -613,6 +644,8 @@ class RunService : Service() {
             req.toolsJson?.takeIf { it.isNotBlank() }?.let { append(",\"tools\":").append(it) }
             if (req.toolChoice.isNotBlank()) append(""","tool_choice":"""").append(jsonEscape(req.toolChoice)).append("\"")
             req.chatTemplateKwargsJson?.takeIf { it.isNotBlank() }?.let { append(",\"chat_template_kwargs\":").append(it) }
+            if (req.rawPrompt) append(",\"raw_prompt\":true")
+            if (req.reusePromptPrefix) append(",\"reuse_prompt_prefix\":true")
             append("}")
         }
         if (!send(json)) fail("session not ready")
@@ -759,6 +792,8 @@ class RunService : Service() {
         const val EXTRA_TOOLS = "tools"
         const val EXTRA_TOOL_CHOICE = "tool_choice"
         const val EXTRA_CHAT_TEMPLATE_KWARGS = "chat_template_kwargs"
+        const val EXTRA_RAW_PROMPT = "raw_prompt"
+        const val EXTRA_REUSE_PROMPT_PREFIX = "reuse_prompt_prefix"
         const val EXTRA_NPREDICT = "n_predict"
         const val EXTRA_THINK = "think"
         const val EXTRA_CLEAR_KV = "clear_kv"

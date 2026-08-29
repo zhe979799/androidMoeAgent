@@ -115,8 +115,49 @@ static bool session_two_gens(const RunConfig & c, std::string & out1, std::strin
     return true;
 }
 
-// Open a Session (cache on), generate, shrink the cache budget hard between generations to force a
-// mass eviction of the warm cache, then generate again. The second output must still match the cold
+// Raw prompts can opt into token-prefix reuse without enabling a chat template. The second prompt
+// diverges after the first prompt, so this exercises rewinding generated tokens and pre-filling only
+// the new suffix.
+static bool
+session_raw_prefix_gen(const RunConfig & c, std::string & reused, int & first_prompt, int & suffix_prompt, std::string & err) {
+    SessionConfig sc;
+    sc.model_path = c.model_path;
+    sc.n_threads = c.n_threads;
+    sc.n_ctx = c.n_ctx;
+    sc.n_batch = c.n_ctx;
+    sc.moe = c.moe;
+
+    std::unique_ptr<Session> s = Session::open(sc, err);
+    if (!s) return false;
+
+    GenerateRequest first;
+    first.prompt = c.prompt;
+    first.n_predict = c.n_predict;
+    first.raw_prompt = true;
+    first.reuse_prompt_prefix = true;
+    first.clear_kv = true;
+    RunResult r1 = s->generate(first);
+    if (!r1) {
+        err = r1.error;
+        return false;
+    }
+
+    GenerateRequest second = first;
+    second.prompt += " Follow-up.";
+    second.clear_kv = false;
+    RunResult r2 = s->generate(second);
+    if (!r2) {
+        err = r2.error;
+        return false;
+    }
+    reused = r2.generated_text;
+    first_prompt = r1.summary.n_prompt;
+    suffix_prompt = r2.summary.n_prompt;
+    return true;
+}
+
+// Open a Session (cache on), shrink the cache budget hard between generations to force a mass
+// eviction of the warm cache, then generate again. The second output must still match the cold
 // resident reference: a runtime resize only changes residency, never the produced bytes.
 static bool
 session_shrink_gen(const RunConfig & c, int shrink_mib, std::string & out1, std::string & out2, std::string & err) {
@@ -334,6 +375,34 @@ int main(int argc, char ** argv) {
     }
     fails += check("S1a session generate #1 == resident", s_res, s_g1);
     fails += check("S1b session generate #2 (warm cache) == resident", s_res, s_g2);
+
+    // Raw Qwen-style prompts are rendered by the caller, so the engine must reuse an explicit
+    // token prefix rather than relying on chat-template history.
+    RunConfig raw = base(model);
+    raw.moe.enabled = true;
+    raw.moe.cache_mb = 2;
+    raw.moe.force_cache = true;
+    raw.moe.io_threads = 4;
+    std::string raw_reused, raw_cold, raw_err;
+    int raw_first_prompt = 0, raw_suffix_prompt = 0;
+    if (!session_raw_prefix_gen(raw, raw_reused, raw_first_prompt, raw_suffix_prompt, raw_err)) {
+        std::fprintf(stderr, "raw prefix session run failed: %s\n", raw_err.c_str());
+        return 2;
+    }
+    RunConfig raw_follow = raw;
+    raw_follow.prompt += " Follow-up.";
+    if (!gen(raw_follow, raw_cold, err)) {
+        std::fprintf(stderr, "raw prefix cold reference failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("S4 raw prompt prefix reuse == cold suffix prefill", raw_cold, raw_reused);
+    if (raw_suffix_prompt >= raw_first_prompt) {
+        std::fprintf(stderr, "raw prefix was not reused (first n_prompt=%d suffix n_prompt=%d)\n",
+                     raw_first_prompt, raw_suffix_prompt);
+        ++fails;
+    } else {
+        std::printf("[PASS] S4 raw prompt n_prompt shrank %d -> %d\n", raw_first_prompt, raw_suffix_prompt);
+    }
 
     // S3: an explicit runtime budget change (set_cache_budget_mb, as an app's memory-pressure callback
     // makes it) evicts warm entries mid-session; the next generation must rebuild them from flash

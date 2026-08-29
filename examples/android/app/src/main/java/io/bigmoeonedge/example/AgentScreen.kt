@@ -63,12 +63,12 @@ fun AgentScreen(
     val ui by RunBus.state.collectAsStateWithLifecycle()
     var request by rememberSaveable { mutableStateOf("") }
     var selectedLog by rememberSaveable { mutableStateOf("") }
-    var systemMessage by rememberSaveable { mutableStateOf(AgentPreferences.load(context)) }
-    var savedSystemMessage by rememberSaveable { mutableStateOf(systemMessage) }
-    var reasoningEffort by rememberSaveable { mutableStateOf("medium") }
-    var outputTokensText by rememberSaveable { mutableStateOf("256") }
-    var policy by remember { mutableStateOf(AgentRunPreferences.load(context)) }
     var protocol by remember { mutableStateOf(AgentRunPreferences.loadProtocol(context)) }
+    var systemMessage by remember { mutableStateOf(AgentPreferences.load(context, protocol)) }
+    var savedSystemMessage by remember { mutableStateOf(systemMessage) }
+    var reasoningEffort by rememberSaveable { mutableStateOf("medium") }
+    var outputTokensText by rememberSaveable { mutableStateOf("1024") }
+    var policy by remember { mutableStateOf(AgentRunPreferences.load(context)) }
     var goal by rememberSaveable { mutableStateOf("") }
     var knownFacts by rememberSaveable { mutableStateOf("") }
     var constraints by rememberSaveable { mutableStateOf("") }
@@ -81,6 +81,9 @@ fun AgentScreen(
 
     fun saveProtocol(next: AgentProtocolProfile) {
         protocol = next
+        val nextMessage = AgentPreferences.load(context, next)
+        systemMessage = nextMessage
+        savedSystemMessage = nextMessage
         AgentRunPreferences.saveProtocol(context, next)
     }
 
@@ -183,10 +186,11 @@ fun AgentScreen(
                     onValueChange = { value ->
                         outputTokensText = value.filter(Char::isDigit).take(9)
                     },
-                    label = { Text("每个模型回合输出 token") },
+                    label = { Text(if (protocol == AgentProtocolProfile.QWEN) "最终回答输出 token" else "每个模型回合输出 token") },
                     supportingText = {
                         Text(
                             if (outputTokens == null || outputTokens < 1) "请输入大于 0 的整数；超过 context 剩余空间时会自动收窄。"
+                            else if (protocol == AgentProtocolProfile.QWEN) "Qwen 工具回合固定最多 256；最终回答请求 $outputTokens token，按 context 剩余空间自动收窄。"
                             else "请求 $outputTokens token；实际预算按当前 prompt 和 context 自动计算。",
                         )
                     },
@@ -237,6 +241,16 @@ fun AgentScreen(
                     "并行只读调用只适用于彼此独立的工具；脚本、文件、日志和搜索始终不会并行。",
                     fontSize = 11.sp,
                     color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SwitchRow(
+                    label = "允许安装命令行工具",
+                    description = if (policy.allowCliInstall)
+                        "已开启：Agent 可下载经过 SHA-256 校验的 POSIX shell 命令到应用私有 bin 目录，并通过 /system/bin/sh 运行。"
+                    else
+                        "已关闭：不会下载或删除命令行工具；需要时请显式开启并启用命令行工具集。",
+                    checked = policy.allowCliInstall,
+                    enabled = !ui.busy && !ui.agentActive && policy.mode != AgentMode.ANSWER_ONLY,
+                    onChange = { savePolicy(policy.copy(allowCliInstall = it)) },
                 )
                 SwitchRow(
                     label = "允许网络工具",
@@ -365,8 +379,8 @@ AgentRunPreferences.saveTemplates(context, saved)
                 OutlinedTextField(
                     value = systemMessage,
                     onValueChange = { systemMessage = it },
-                    label = { Text("SystemMessage / Developer 指令（可选）") },
-                    supportingText = { Text("GPT-OSS 作为 Harmony developer 消息发送；工具按模型原生 schema 注入。") },
+                    label = { Text("${protocol.label} SystemMessage / 指令（可选）") },
+                    supportingText = { Text("当前内容仅保存到 ${protocol.label} 配置；GPT-OSS 使用 developer，Qwen 使用 system。") },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     minLines = 4,
                     maxLines = 10,
@@ -375,7 +389,7 @@ AgentRunPreferences.saveTemplates(context, saved)
                     TextButton(
                         onClick = {
                             systemMessage = ""
-                            AgentPreferences.save(context, "")
+                            AgentPreferences.save(context, protocol, "")
                             savedSystemMessage = ""
                         },
                         enabled = systemMessage.isNotEmpty() || savedSystemMessage.isNotEmpty(),
@@ -383,8 +397,7 @@ AgentRunPreferences.saveTemplates(context, saved)
                     TextButton(
                         onClick = {
                             val normalized = AgentPreferences.normalize(systemMessage)
-                            systemMessage = normalized
-                            AgentPreferences.save(context, normalized)
+                            AgentPreferences.save(context, protocol, normalized)
                             savedSystemMessage = normalized
                         },
                         enabled = AgentPreferences.normalize(systemMessage) != savedSystemMessage,
@@ -403,12 +416,11 @@ AgentRunPreferences.saveTemplates(context, saved)
                         onClick = {
                             selected?.let {
                                 val normalized = AgentPreferences.normalize(systemMessage)
-                                systemMessage = normalized
-                                AgentPreferences.save(context, normalized)
+                                AgentPreferences.save(context, protocol, normalized)
                                 savedSystemMessage = normalized
                                 coordinator.start(
                                     context, it, settings, request, selectedLog, allowedTools, normalized,
-                                    reasoningEffort, outputTokens ?: 256,
+                                    reasoningEffort, outputTokens ?: 1024,
                                     AgentRunConfig(
                                         AgentContext(goal, knownFacts, constraints, outputFormat),
                                         policy,

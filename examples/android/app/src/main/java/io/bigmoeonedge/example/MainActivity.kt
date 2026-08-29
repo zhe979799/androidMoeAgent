@@ -966,6 +966,8 @@ internal fun launchPrompt(
     toolsJson: String? = null,
     toolChoice: String = "auto",
     chatTemplateKwargsJson: String? = null,
+    rawPrompt: Boolean = false,
+    reusePromptPrefix: Boolean = false,
 ) {
     RunBus.resetGeneration()
     val sig = settings.sessionSignature(model.absolutePath)
@@ -981,6 +983,8 @@ internal fun launchPrompt(
                 .putExtra(RunService.EXTRA_TOOLS, toolsJson)
                 .putExtra(RunService.EXTRA_TOOL_CHOICE, toolChoice)
                 .putExtra(RunService.EXTRA_CHAT_TEMPLATE_KWARGS, chatTemplateKwargsJson)
+                .putExtra(RunService.EXTRA_RAW_PROMPT, rawPrompt)
+                .putExtra(RunService.EXTRA_REUSE_PROMPT_PREFIX, reusePromptPrefix)
                 .putExtra(RunService.EXTRA_DISPLAY_PROMPT, displayPrompt)
                 .putExtra(RunService.EXTRA_SUPPRESS_TRANSCRIPT, suppressTranscript)
         )
@@ -1005,6 +1009,8 @@ internal fun launchPrompt(
                 .putExtra(RunService.EXTRA_TOOLS, toolsJson)
                 .putExtra(RunService.EXTRA_TOOL_CHOICE, toolChoice)
                 .putExtra(RunService.EXTRA_CHAT_TEMPLATE_KWARGS, chatTemplateKwargsJson)
+                .putExtra(RunService.EXTRA_RAW_PROMPT, rawPrompt)
+                .putExtra(RunService.EXTRA_REUSE_PROMPT_PREFIX, reusePromptPrefix)
                 .putExtra(RunService.EXTRA_DISPLAY_PROMPT, displayPrompt)
                 .putExtra(RunService.EXTRA_SUPPRESS_TRANSCRIPT, suppressTranscript)
         )

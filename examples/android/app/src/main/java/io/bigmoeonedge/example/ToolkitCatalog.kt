@@ -57,6 +57,14 @@ object ToolkitCatalog {
             defaultEnabled = false,
         ),
         ToolkitDefinition(
+            id = "cli",
+            title = "命令行工具",
+            description = "查看、安装、运行和删除应用私有目录中的 POSIX shell 命令；不涉及 APK、native binary、root 或系统目录。",
+            tools = setOf("cli_catalog", "install_cli", "run_cli", "remove_cli"),
+            defaultEnabled = false,
+        ),
+
+        ToolkitDefinition(
             id = "files",
             title = "文件阅读",
             description = "列出应用私有文件，并按偏移分段读取文本内容。",
@@ -90,6 +98,10 @@ object ToolkitCatalog {
         "search_bing" to "Bing 搜索",
         "search_exa" to "Exa 搜索",
         "run_script" to "脚本执行",
+        "cli_catalog" to "命令行工具目录",
+        "install_cli" to "安装命令行工具",
+        "run_cli" to "运行命令行工具",
+        "remove_cli" to "删除命令行工具",
         "file_list" to "文件列表",
         "file_read" to "分段读文件",
     )
@@ -121,7 +133,11 @@ object ToolkitCatalog {
         "search_baidu" -> "查询百度公开网页结果，不打开结果页面"
         "search_bing" -> "查询 Bing 公开网页结果，不打开结果页面"
         "search_exa" -> "通过 Exa API 查询语义搜索结果，不打开结果页面"
-        "run_script" -> "在应用私有目录执行短脚本并返回有限输出"
+        "run_script" -> "在应用私有目录执行短脚本；已安装命令通过 run_cli 调用"
+        "cli_catalog" -> "查看应用私有 bin 目录中的工具"
+        "install_cli" -> "下载并校验 POSIX shell 命令到应用私有目录"
+        "run_cli" -> "通过 Android shell 运行已安装的 POSIX shell 命令"
+        "remove_cli" -> "删除已安装的应用私有 POSIX shell 命令"
         "file_list" -> "列出应用私有文件名、大小和修改时间"
         "file_read" -> "按 offset 分段读取应用私有文本文件"
         else -> ""

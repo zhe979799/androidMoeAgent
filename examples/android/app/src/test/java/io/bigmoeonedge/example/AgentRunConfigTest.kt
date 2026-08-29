@@ -21,6 +21,16 @@ class AgentRunConfigTest {
     }
 
     @Test
+    fun cliInstallIsOffUntilBothNetworkAndInstallPermissionAreEnabled() {
+        val defaultTools = AgentPolicy().filterTools(setOf("cli_catalog", "install_cli", "remove_cli"))
+        assertTrue("cli_catalog" in defaultTools)
+        assertTrue("install_cli" !in defaultTools)
+        assertTrue("remove_cli" !in defaultTools)
+        val enabled = AgentPolicy(allowNetwork = true, allowCliInstall = true)
+            .filterTools(setOf("cli_catalog", "install_cli", "remove_cli"))
+        assertEquals(setOf("cli_catalog", "install_cli", "remove_cli"), enabled)
+    }
+    @Test
     fun answerOnlyModeNeverExposesTools() {
         val policy = AgentPolicy(mode = AgentMode.ANSWER_ONLY)
         assertTrue(policy.filterTools(NetworkTools.names).isEmpty())

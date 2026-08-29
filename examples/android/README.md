@@ -21,9 +21,10 @@ engine CSVs and report together, especially when thermal readings are unavailabl
 differs.
 
 
-The Agent has a free-form per-model-turn output-token budget (default 256). The native session clamps
-that request after tokenizing the rendered prompt, so a large value is safe: it uses only the context
-room that remains after the prompt. GPT-OSS models use their native Harmony message/template path, while
+The Agent uses a separate budget for exploration and final answers: Qwen3.6 tool turns are capped at 256
+tokens, while the final answer defaults to 1024 tokens. The native session clamps each request after
+tokenizing the rendered prompt, so a large final value is safe: it uses only the context room that
+remains after the prompt. GPT-OSS models use their native Harmony message/template path, while
 Qwen2/Qwen3/Qwen3.5 models use their native Qwen tool template. The saved Agent message is a developer
 instruction for GPT-OSS and a system instruction for Qwen, the console exposes Harmony reasoning effort
 (`low`, `medium`, `high`), enabled tools are passed as function schemas, and tool results return as structured
@@ -37,9 +38,10 @@ directly and call a tool only when fresh device evidence is needed. Later turns 
 can finish after the evidence is sufficient. Other architectures keep the bounded JSON prompt fallback.
 If a model still emits a reasoning wrapper, the app extracts only a strictly validated tool object and
 removes complete or truncated reasoning from the visible answer.
-The Agent workspace supports **快速任务**, **深入任务** and **仅回答** modes, plus an explicit **GPT-OSS**
-or **Qwen** protocol profile. The profile is saved and shown independently of the selected model file;
-GPT-OSS uses its developer-role/reasoning configuration and Qwen uses its system-role/template behavior.
+SystemMessage values are stored separately for the selected protocol profile. Switching between **GPT-OSS**
+and **Qwen** changes the visible editor and its persisted value; a shared legacy SystemMessage is no
+longer injected into either profile. GPT-OSS uses the developer role and Qwen uses the system role.
+
 Objective, known information, constraints and output format are optional per run; empty fields are omitted
 from the model prompt. Policy controls tool rounds, parallel read-only calls, capability groups and
 first-turn evidence. Built-in network, performance and device templates remain available as explicit
@@ -53,13 +55,22 @@ screen also retains an opt-in tool mode. It is a bounded foreground workflow: th
 `bmoe-cli --session` remains the only inference owner, so the model and MoE expert cache remain warm
 across its model → tool → model turns. The app never starts a gateway, scheduler or background shell
 process for this feature. Script execution is available only when explicitly enabled and runs in the app's
-private files directory with a bounded timeout and output size.
+private files directory with a bounded timeout and output size. The optional command-line toolkit is
+separately disabled by default: when explicitly enabled, the Agent can list, install, run or remove
+POSIX shell commands under the app-private `bin` directory. Android 10+ does not allow downloaded native
+code execution from writable app storage, so installation accepts only shebang scripts and `run_cli`
+invokes them through `/system/bin/sh`. Each install requires an HTTPS source, a public host and a
+user-supplied SHA-256 digest, is capped at 64 MiB, and is finalized atomically. It cannot install APKs,
+native binaries, system packages, root tools or write system folders.
 
-The Agent workspace also accepts an optional user-authored **SystemMessage**. It is stored in the
-app's local preferences, can be restored to the built-in rules, and is applied to later Agent turns.
-The app's safety rules and the selected tool definitions are appended after that message, so the
-tool contract remains visible and follows the configured SystemMessage. Starting a task saves
-the current editor value as well as the explicit save action.
+Qwen Agent turns use the Qwen3.6 native prompt format directly when the Qwen protocol profile is selected:
+`<|im_start|>` roles, Qwen XML `<tool_call>` blocks, and `<tool_response>` results. The app bypasses only
+llama.cpp chat-template application for these turns and explicitly reuses the common tokenized prompt
+prefix between tool rounds; a failed prefix rewind falls back to a full KV clear and prefill retry. Final
+answer generation disables tools and thinking, clears the old KV context, and receives only the original
+task plus a bounded evidence digest. GGUF tokenization, persistent sessions, KV cache, and MoE expert
+streaming remain provided by the existing engine. Other protocol profiles continue to use the model-provided
+structured chat template.
 
 The model can request at most **five** tool rounds and, when it emits independent registered observations,
 up to two may execute in parallel. Every call plus its raw result remains visible in the chat UI. The optional Performance observation,
@@ -96,7 +107,11 @@ ledger instead of repeatedly injecting raw search or file output.
 - `search_baidu` — public Baidu search titles, links and snippets;
 - `search_bing` — public Bing search titles, links and snippets;
 - `search_exa` — Exa semantic search results when its local API key is configured;
-- `run_script` — a short shell script in the app-private files directory, only when the group is enabled.
+- `run_script` — a short shell script in the app-private files directory, only when the group is enabled;
+- `cli_catalog` — list installed app-private POSIX shell commands;
+- `install_cli` — download one shebang shell script after HTTPS/public-host and SHA-256 validation (64 MiB maximum); the separate install permission and toolkit must both be enabled;
+- `run_cli` — run an installed shell command through `/system/bin/sh` with bounded arguments, input, time and output;
+- `remove_cli` — remove an installed app-private shell command; no APK, native binary, system package, root or system-directory installation;
 - `file_list` — list app-private files and sizes;
 - `file_read` — read a text file in chunks using `offset`, `max_bytes` and the returned `next_offset`.
 

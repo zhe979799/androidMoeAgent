@@ -41,6 +41,13 @@ for its own tokens, not a full re-prefill — which matters because prefill is t
 device. `BMOE_DONE.n_prompt` reports the tokens actually prefilled this turn; `n_past` is the total
 context length after it.
 
+**Raw prompt prefix reuse.** A caller that renders a native prompt itself (for example Qwen3.6)
+can set `raw_prompt=true` and `reuse_prompt_prefix=true`. The Session tokenizes the complete prompt,
+keeps the common prefix already present in seq 0, rewinds the divergent tail and pre-fills only the
+new suffix. If a partial KV removal or prefill fails, both target/draft contexts are cleared and the
+prefill is retried once. `BMOE_DONE.n_prompt` reports the suffix tokens actually prefilled; callers
+that do not opt into raw prefix reuse remain independent prompts.
+
 **Fallbacks and costs.** SWA-style memory (e.g. Gemma) can refuse a partial `seq_rm`; the engine
 then clears the KV and re-prefills the whole prompt for that turn (correct, just slower). With
 thinking **on**, the template strips the previous turn's reasoning on re-render, so the rendered

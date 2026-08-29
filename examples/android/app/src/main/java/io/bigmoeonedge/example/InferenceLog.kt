@@ -28,6 +28,8 @@ internal class InferenceLog private constructor(
             nPredict: Int,
             think: Boolean,
             clearKv: Boolean,
+            rawPrompt: Boolean,
+            reusePromptPrefix: Boolean,
             displayPrompt: String?,
             suppressTranscript: Boolean,
         ): InferenceLog? = runCatching {
@@ -54,6 +56,8 @@ internal class InferenceLog private constructor(
                 put("n_predict", nPredict)
                 put("think", think)
                 put("clear_kv", clearKv)
+                put("raw_prompt", rawPrompt)
+                put("reuse_prompt_prefix", reusePromptPrefix)
                 put("suppress_transcript", suppressTranscript)
             })
             files(dir).drop(MAX_FILES).forEach { it.delete() }
